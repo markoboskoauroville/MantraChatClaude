@@ -1,0 +1,517 @@
+#!/usr/bin/env python3
+"""
+chatd.py, the chat interface server. Flask, 127.0.0.1 only.
+
+One page, MANTRA CHAT, that mirrors the Claude Code conversation of whatever
+project is open: Marko's prompts and Claude's answers arrive through the
+Claude Code hooks (chat_hook.py), Marko answers from the page and it lands
+in ~/.tspeak/inbox where the session is watching, and every answer has a
+READ button that speaks it with Beatrice and lights the words.
+
+Port handling is the SAMPLE_PLAYER pattern: bind upward from 8825, write the
+winner to ~/.tspeak/port.txt. Never holds a key, never talks to the network
+except Speechify through the ring when READ is pressed.
+
+  GET  /                    the page
+  GET  /health              {ok, port, clients, messages}
+  GET  /api/messages        ?since=<id>
+  GET  /api/events          server sent events, one message per event
+  POST /api/message         {role: claude|marko|system, text, session, cwd, project}
+  POST /api/send            {text, reply_to}  Marko's answer from the page
+  POST /reply               the older reading pages post here, same as /api/send
+  POST /api/read/<id>       {speed} -> {clips:[{src, prop, sents}], billed, cached}
+  POST /api/pane            {open: true|false} claude.ai window beside the page
+  POST /api/open            open the page in the browser if nobody has it open
+  POST /api/session         {event, session, cwd, project, bridge}
+"""
+
+import base64
+import datetime
+import json
+import os
+import queue
+import socket
+import subprocess
+import sys
+import threading
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+
+from flask import Flask, Response, jsonify, request, stream_with_context   # noqa: E402
+
+from ring import Ring                          # noqa: E402
+from speechify import synth                    # noqa: E402
+from page import sentences_of                  # noqa: E402
+from lastanswer import plain, chunk, sentences, _split_long   # noqa: E402
+from chat_page import page_html                # noqa: E402
+
+HOST = '127.0.0.1'
+BASE = int(os.environ.get('TSPEAK_INBOX_PORT', '8825'))
+DIR = os.path.expanduser('~/.tspeak')
+CHAT = os.path.join(DIR, 'chat')
+MSGS = os.path.join(CHAT, 'messages.jsonl')
+AUDIO = os.path.join(CHAT, 'audio')
+INBOX = os.path.join(DIR, 'inbox')
+PORTFILE = os.path.join(DIR, 'port.txt')
+LOG = os.path.join(DIR, 'chatd.log')
+HS = '/opt/homebrew/bin/hs'
+GOLDEN = 0.381966            # the smaller part of the golden section
+TITLE = 'MANTRA CHAT'
+
+app = Flask(__name__)
+LOCK = threading.Lock()
+SYNTH_LOCK = threading.Lock()
+SUBS = []
+MESSAGES = []
+STATE = {'port': BASE, 'pane': False}
+
+
+# ------------------------------------------------------------------ storage
+def log(msg):
+    try:
+        with open(LOG, 'a', encoding='utf-8') as fh:
+            fh.write('%s %s\n' % (datetime.datetime.now().strftime('%H:%M:%S'), msg))
+    except OSError:
+        pass
+
+
+def load():
+    if not os.path.isfile(MSGS):
+        return
+    with open(MSGS, encoding='utf-8', errors='replace') as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                MESSAGES.append(json.loads(line))
+            except ValueError:
+                continue
+
+
+def append(role, text, **meta):
+    with LOCK:
+        mid = (MESSAGES[-1]['id'] + 1) if MESSAGES else 1
+        rec = {'id': mid, 'role': role, 'text': text,
+               'time': datetime.datetime.now().isoformat(timespec='seconds')}
+        for k, v in meta.items():
+            if v not in (None, ''):
+                rec[k] = v
+        MESSAGES.append(rec)
+        os.makedirs(CHAT, exist_ok=True)
+        with open(MSGS, 'a', encoding='utf-8') as fh:
+            fh.write(json.dumps(rec, ensure_ascii=False) + '\n')
+        for q in list(SUBS):
+            q.put(rec)
+    return rec
+
+
+def write_inbox(text, page):
+    """The same file the reading page writes, so the session's watcher fires."""
+    now = datetime.datetime.now()
+    stamp = now.strftime('%Y%m%d-%H%M%S-%f')[:-3]
+    os.makedirs(INBOX, exist_ok=True)
+    path = os.path.join(INBOX, stamp + '.json')
+    rec = {'time': now.isoformat(timespec='seconds'), 'page': str(page or ''), 'text': text}
+    tmp = path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as fh:
+        json.dump(rec, fh, ensure_ascii=False, indent=1)
+    os.replace(tmp, path)
+    with open(os.path.join(INBOX, 'latest.txt'), 'w', encoding='utf-8') as fh:
+        fh.write(text + '\n')
+    return path
+
+
+def body():
+    raw = request.get_data(as_text=True) or ''
+    if raw.lstrip().startswith('{'):
+        try:
+            return json.loads(raw)
+        except ValueError:
+            pass
+    return {'text': raw}
+
+
+# --------------------------------------------------------------------- http
+@app.after_request
+def cors(resp):
+    resp.headers['Access-Control-Allow-Origin'] = '*'
+    resp.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    resp.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    resp.headers['Cache-Control'] = 'no-store'
+    return resp
+
+
+@app.route('/', methods=['GET'])
+def index():
+    return Response(page_html(STATE['port']), mimetype='text/html')
+
+
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({'ok': True, 'port': STATE['port'], 'clients': len(SUBS),
+                    'messages': len(MESSAGES), 'pane': STATE['pane'], 'inbox': INBOX})
+
+
+@app.route('/api/messages', methods=['GET'])
+def messages():
+    since = int(request.args.get('since') or 0)
+    limit = int(request.args.get('limit') or 300)
+    out = [m for m in MESSAGES if m['id'] > since]
+    return jsonify(out[-limit:])
+
+
+@app.route('/api/events', methods=['GET'])
+def events():
+    q = queue.Queue()
+
+    def gen():
+        with LOCK:
+            SUBS.append(q)
+        try:
+            yield 'retry: 2000\n\n'
+            while True:
+                try:
+                    rec = q.get(timeout=15)
+                    yield 'data: %s\n\n' % json.dumps(rec, ensure_ascii=False)
+                except queue.Empty:
+                    yield ': ping\n\n'
+        finally:
+            with LOCK:
+                if q in SUBS:
+                    SUBS.remove(q)
+    return Response(stream_with_context(gen()), mimetype='text/event-stream',
+                    headers={'X-Accel-Buffering': 'no'})
+
+
+@app.route('/api/message', methods=['POST', 'OPTIONS'])
+def message():
+    if request.method == 'OPTIONS':
+        return ('', 204)
+    d = body()
+    text = str(d.get('text') or '').strip()
+    role = str(d.get('role') or 'system')
+    if role not in ('claude', 'marko', 'system'):
+        role = 'system'
+    if not text:
+        return jsonify({'ok': False, 'error': 'empty'}), 400
+    rec = append(role, text, session=d.get('session'), cwd=d.get('cwd'),
+                 project=d.get('project'), source=d.get('source'))
+    return jsonify({'ok': True, 'id': rec['id']})
+
+
+@app.route('/api/send', methods=['POST', 'OPTIONS'])
+@app.route('/reply', methods=['POST', 'OPTIONS'])
+def send():
+    if request.method == 'OPTIONS':
+        return ('', 204)
+    d = body()
+    text = str(d.get('text') or '').strip()
+    if not text:
+        return jsonify({'ok': False, 'error': 'empty'}), 400
+    page = d.get('reply_to') or d.get('page') or ''
+    path = write_inbox(text, page)
+    rec = append('marko', text, source='page', reply_to=page)
+    return jsonify({'ok': True, 'file': path, 'id': rec['id']})
+
+
+@app.route('/api/session', methods=['POST', 'OPTIONS'])
+def session():
+    if request.method == 'OPTIONS':
+        return ('', 204)
+    d = body()
+    project = d.get('project') or os.path.basename(d.get('cwd') or '') or 'a project'
+    ev = d.get('event') or 'start'
+    sid = str(d.get('session') or '')[:8]
+    text = 'Session %s in %s' % ('started' if ev == 'start' else ev, project)
+    if sid:
+        text += ' · ' + sid
+    rec = append('system', text, session=d.get('session'), cwd=d.get('cwd'),
+                 project=project, bridge=d.get('bridge'))
+    return jsonify({'ok': True, 'id': rec['id']})
+
+
+CHROME = '/Applications/Google Chrome.app'
+
+
+def open_page():
+    """Always Chrome, always an app window: no address bar, no tabs, no menus,
+    resizable, the whole window is the page. Whatever the default browser is."""
+    url = 'http://%s:%d/' % (HOST, STATE['port'])
+    if os.path.isdir(CHROME):
+        subprocess.Popen(['open', '-na', 'Google Chrome', '--args', '--app=' + url],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        subprocess.Popen(['open', url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return url
+
+
+@app.route('/api/open', methods=['POST', 'OPTIONS'])
+def api_open():
+    if request.method == 'OPTIONS':
+        return ('', 204)
+    if SUBS and not body().get('force'):
+        return jsonify({'ok': True, 'opened': False, 'clients': len(SUBS)})
+    return jsonify({'ok': True, 'opened': True, 'url': open_page()})
+
+
+# --------------------------------------------------------------------- read
+@app.route('/api/read/<int:mid>', methods=['POST', 'OPTIONS'])
+def read(mid):
+    if request.method == 'OPTIONS':
+        return ('', 204)
+    msg = next((m for m in MESSAGES if m['id'] == mid), None)
+    if not msg:
+        return jsonify({'ok': False, 'error': 'no such message'}), 404
+    cache = os.path.join(AUDIO, '%d.json' % mid)
+    if os.path.isfile(cache):
+        with open(cache, encoding='utf-8') as fh:
+            data = json.load(fh)
+        data['cached'] = True
+        return jsonify(data)
+    speech = plain(msg['text'])
+    chunks = chunk(speech)
+    if not chunks:
+        return jsonify({'ok': False, 'error': 'nothing to read'}), 400
+    clips, billed = [], 0
+    with SYNTH_LOCK:
+        ring = Ring()
+        if not ring.keys:
+            return jsonify({'ok': False, 'error': 'no Speechify keys in ' + ring.keyfile}), 503
+        if not ring.usable():
+            return jsonify({'ok': False, 'error': 'every Speechify key is dead or cooling'}), 503
+        for c in chunks:
+            try:
+                audio, tokens, b, prop = synth(ring, c)
+            except RuntimeError as e:
+                log('read %d failed: %s' % (mid, e))
+                return jsonify({'ok': False, 'error': str(e)}), 502
+            billed += b
+            clips.append({'src': 'data:audio/mpeg;base64,' + base64.b64encode(audio).decode('ascii'),
+                          'prop': prop, 'sents': sentences_of(c, tokens)})
+        label, masked = ring.active()
+    data = {'ok': True, 'id': mid, 'clips': clips, 'billed': billed, 'key': label, 'cached': False}
+    os.makedirs(AUDIO, exist_ok=True)
+    with open(cache, 'w', encoding='utf-8') as fh:
+        json.dump(data, fh)
+    log('read %d: %d chunks, %d chars on %s %s' % (mid, len(chunks), billed, label, masked))
+    return jsonify(data)
+
+
+# ------------------------------------------------- read, one sentence at a time
+# The page asks for the plan (the sentences), then for sentence 0, and while
+# sentence n plays it asks for n+1. Each sentence is one Speechify call and one
+# cache file, so a STOP wastes at most the sentence already in flight, and a
+# second reading of the same card costs nothing.
+PLANS = {}
+SENT_LIMIT = 1800
+
+
+def make_plan(pid, text):
+    pieces = []
+    for sent in sentences(plain(text)):
+        sent = sent.strip()
+        if not sent:
+            continue
+        pieces.extend(_split_long(sent, SENT_LIMIT) if len(sent) > SENT_LIMIT else [sent])
+    plan = {'id': pid, 'count': len(pieces), 'sents': pieces}
+    d = os.path.join(AUDIO, pid)
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, 'plan.json'), 'w', encoding='utf-8') as fh:
+        json.dump(plan, fh, ensure_ascii=False)
+    PLANS[pid] = plan
+    return plan
+
+
+def read_plan(pid):
+    """pid is a message id as a string, or 'd<hash>' for an unsent draft."""
+    pid = str(pid)
+    if pid in PLANS:
+        return PLANS[pid]
+    planfile = os.path.join(AUDIO, pid, 'plan.json')
+    if os.path.isfile(planfile):
+        with open(planfile, encoding='utf-8') as fh:
+            PLANS[pid] = json.load(fh)
+        return PLANS[pid]
+    if pid.startswith('d'):
+        return None
+    try:
+        mid = int(pid)
+    except ValueError:
+        return None
+    msg = next((m for m in MESSAGES if m['id'] == mid), None)
+    if not msg:
+        return None
+    return make_plan(pid, msg['text'])
+
+
+@app.route('/api/read/draft/plan', methods=['POST', 'OPTIONS'])
+def read_draft_plan():
+    """A plan for text that has not been sent, keyed by its hash, so the same
+    draft read twice is free and an edited draft is a new plan."""
+    if request.method == 'OPTIONS':
+        return ('', 204)
+    import hashlib
+    text = str(body().get('text') or '').strip()
+    if not text:
+        return jsonify({'ok': False, 'error': 'nothing to read'}), 400
+    pid = 'd' + hashlib.sha1(text.encode('utf-8')).hexdigest()[:12]
+    plan = PLANS.get(pid) or read_plan(pid) or make_plan(pid, text)
+    if not plan['count']:
+        return jsonify({'ok': False, 'error': 'nothing to read'}), 400
+    return jsonify(dict(plan, ok=True))
+
+
+@app.route('/api/read/<int:mid>/plan', methods=['POST', 'OPTIONS'])
+def read_plan_route(mid):
+    mid = str(mid)
+    if request.method == 'OPTIONS':
+        return ('', 204)
+    plan = read_plan(mid)
+    if plan is None:
+        return jsonify({'ok': False, 'error': 'no such message'}), 404
+    if not plan['count']:
+        return jsonify({'ok': False, 'error': 'nothing to read'}), 400
+    return jsonify(dict(plan, ok=True))
+
+
+@app.route('/api/read/<mid>/sent/<int:n>', methods=['POST', 'OPTIONS'])
+def read_sentence(mid, n):
+    mid = str(mid)
+    if request.method == 'OPTIONS':
+        return ('', 204)
+    plan = read_plan(mid)
+    if plan is None or n < 0 or n >= plan['count']:
+        return jsonify({'ok': False, 'error': 'no such sentence'}), 404
+    cache = os.path.join(AUDIO, mid, '%d.json' % n)
+    if os.path.isfile(cache):
+        with open(cache, encoding='utf-8') as fh:
+            data = json.load(fh)
+        data['cached'] = True
+        return jsonify(data)
+    text = plan['sents'][n]
+    with SYNTH_LOCK:
+        ring = Ring()
+        if not ring.keys:
+            return jsonify({'ok': False, 'error': 'no Speechify keys in ' + ring.keyfile}), 503
+        if not ring.usable():
+            return jsonify({'ok': False, 'error': 'every Speechify key is dead or cooling'}), 503
+        try:
+            audio, tokens, billed, prop = synth(ring, text)
+        except RuntimeError as e:
+            log('read %s/%d failed: %s' % (mid, n, e))
+            return jsonify({'ok': False, 'error': str(e)}), 502
+        label, masked = ring.active()
+    clip = {'src': 'data:audio/mpeg;base64,' + base64.b64encode(audio).decode('ascii'),
+            'prop': prop, 'text': text, 'words': tokens,
+            'dur': (tokens[-1]['d'] if tokens and not prop else 0)}
+    data = {'ok': True, 'id': mid, 'n': n, 'clip': clip, 'billed': billed, 'key': label, 'cached': False}
+    os.makedirs(os.path.dirname(cache), exist_ok=True)
+    with open(cache, 'w', encoding='utf-8') as fh:
+        json.dump(data, fh)
+    log('read %s/%d: %d chars on %s %s' % (mid, n, billed, label, masked))
+    return jsonify(data)
+
+
+# --------------------------------------------------------------------- pane
+LUA_TILE = r"""
+local ratio = %(ratio)s
+local want = %(open)s
+local scr = hs.screen.mainScreen():frame()
+local chat, ai
+for _, w in ipairs(hs.window.allWindows()) do
+  local t = w:title() or ''
+  local a = w:application() and w:application():name() or ''
+  if t:find('MANTRA CHAT', 1, true) then chat = w
+  elseif (a == 'Google Chrome' or a == 'Brave Browser' or a == 'Safari') and t:find('Claude', 1, true) and not t:find('MANTRA', 1, true) then ai = ai or w end
+end
+local left = hs.geometry.rect(scr.x, scr.y, math.floor(scr.w * ratio), scr.h)
+local right = hs.geometry.rect(scr.x + math.floor(scr.w * ratio), scr.y, scr.w - math.floor(scr.w * ratio), scr.h)
+if want then
+  if not ai then return 'noai' end
+  if ai:isMinimized() then ai:unminimize() end
+  ai:setFrame(left, 0)
+  if chat then chat:setFrame(right, 0) end
+  ai:raise()
+  if chat then chat:focus() end
+  return 'open'
+else
+  if ai then ai:minimize() end
+  if chat then chat:setFrame(scr, 0); chat:focus() end
+  return 'closed'
+end
+"""
+
+
+def hs_run(code):
+    try:
+        out = subprocess.run([HS, '-c', code], capture_output=True, text=True, timeout=8)
+        lines = [l for l in (out.stdout or '').splitlines() if l.strip() and not l.startswith('--')]
+        return (lines[-1].strip() if lines else ''), (out.stderr or '').strip()
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return '', str(e)
+
+
+@app.route('/api/pane', methods=['POST', 'OPTIONS'])
+def pane():
+    if request.method == 'OPTIONS':
+        return ('', 204)
+    want = bool(body().get('open'))
+    if not os.path.exists(HS):
+        if want:
+            subprocess.Popen(['open', 'https://claude.ai/'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        STATE['pane'] = want
+        return jsonify({'ok': True, 'pane': want, 'detail': 'Hammerspoon not installed, opened claude.ai in a tab'})
+    code = LUA_TILE % {'ratio': GOLDEN, 'open': 'true' if want else 'false'}
+    out, err = hs_run(code)
+    if want and out == 'noai':
+        # claude.ai has no window yet: open it as its own app window, then tile again
+        subprocess.Popen(['open', '-na', 'Google Chrome', '--args', '--app=https://claude.ai/'],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        import time
+        for _ in range(20):
+            time.sleep(0.4)
+            out, err = hs_run(code)
+            if out == 'open':
+                break
+    STATE['pane'] = want if out in ('open', 'closed') else STATE['pane']
+    return jsonify({'ok': out in ('open', 'closed'), 'pane': STATE['pane'], 'detail': out or err})
+
+
+# --------------------------------------------------------------------- main
+def pick_port(host, start, span=20):
+    for p in range(start, start + span):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)   # as the server itself binds
+        try:
+            s.bind((host, p))
+            return p
+        except OSError:
+            continue
+        finally:
+            s.close()
+    return start
+
+
+def main():
+    os.makedirs(CHAT, exist_ok=True)
+    os.makedirs(INBOX, exist_ok=True)
+    load()
+    port = pick_port(HOST, BASE)
+    STATE['port'] = port
+    with open(PORTFILE, 'w', encoding='utf-8') as fh:
+        fh.write('%d\n' % port)
+    try:
+        import flask.cli
+        flask.cli.show_server_banner = lambda *a, **k: None
+    except Exception:
+        pass
+    log('chatd on http://%s:%d with %d messages' % (HOST, port, len(MESSAGES)))
+    sys.stdout.write('chatd on http://%s:%d\n' % (HOST, port))
+    sys.stdout.flush()
+    app.run(host=HOST, port=port, threaded=True, debug=False, use_reloader=False)
+
+
+if __name__ == '__main__':
+    main()

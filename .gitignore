@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*api*.txt
+*.key
+*.mp3
+*.html
+.DS_Store
