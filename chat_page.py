@@ -108,10 +108,18 @@ body.pinned #pin{color:var(--amber);border-color:var(--amber)}
 #pill #px{color:#e23b4e}
 #pill .v{font:700 11px/1 ui-monospace,Menlo,monospace;color:var(--amber);min-width:38px;text-align:center}
 #pill .grip{width:10px;height:22px;border-left:2px dotted var(--dim);border-right:2px dotted var(--dim);margin:0 4px}
-#composer{border-top:1px solid var(--line);padding:12px 16px 16px;background:var(--panel)}
-#composer .in{max-width:860px;margin:0 auto}
-#rt{width:100%;min-height:74px;max-height:40vh;background:#141a21;color:var(--ink);border:1px solid var(--slate);border-radius:12px;
-  padding:12px 14px;font:17px/1.5 inherit;resize:vertical;outline:none}
+/* THE COMPOSER IS A BAND WHOSE HEIGHT HE SETS. His request, 3.9.2026: "make possible to change
+   size of the chat box so there is a chat like a log and there is entry box. I want to be able
+   with mouse to change the ratio of that two". The grip above the band drags; the textarea
+   fills whatever height the band has; the height is remembered per browser. */
+#composer{flex:0 0 auto;height:var(--ch,150px);min-height:90px;max-height:80vh;display:flex;flex-direction:column;
+  border-top:1px solid var(--line);padding:0 16px 14px;background:var(--panel);position:relative}
+#grip{flex:0 0 14px;cursor:row-resize;display:flex;align-items:center;justify-content:center;user-select:none;touch-action:none}
+#grip i{display:block;width:56px;height:4px;border-radius:2px;background:var(--slate)}
+#grip:hover i,#grip.drag i{background:var(--amber)}
+#composer .in{max-width:860px;margin:0 auto;width:100%;flex:1;min-height:0;display:flex;flex-direction:column}
+#rt{width:100%;flex:1;min-height:40px;background:#141a21;color:var(--ink);border:1px solid var(--slate);border-radius:12px;
+  padding:12px 14px;font:17px/1.5 inherit;resize:none;outline:none}
 #rt:focus{border-color:var(--amber)}
 #composer .row{display:flex;align-items:center;gap:12px;margin-top:8px}
 #composer.reading{box-shadow:inset 0 1px 0 var(--amber)}
@@ -443,7 +451,32 @@ function sendReply(){
     .catch(() => { sendBtn.disabled = false; status('Server not reachable. Copy the text into the terminal.', 'bad'); });
 }
 sendBtn.onclick = sendReply;
-rt.addEventListener('keydown', e => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter'){ e.preventDefault(); sendReply(); } });
+/* ENTER SENDS. His request, 3.9.2026: "when I press enter, it sends the message to you command
+   enter. It's too much work. Only enter works." Shift+Enter still makes a new line, and so does
+   Option+Enter, for the rare answer that needs one. */
+rt.addEventListener('keydown', e => {
+  if (e.key !== 'Enter' || e.isComposing) return;
+  if (e.shiftKey || e.altKey) return;
+  e.preventDefault(); sendReply();
+});
+/* THE GRIP. Drag it up for a taller entry box, down for a longer log. The height is kept in
+   localStorage, read inside a try because a browser with site data off throws on the way in. */
+const grip = document.getElementById('grip');
+const CH_KEY = 'mantra.composerH';
+function setCH(h){
+  h = Math.max(90, Math.min(Math.round(h), Math.round(window.innerHeight * 0.8)));
+  composer.style.setProperty('--ch', h + 'px');
+  try { localStorage.setItem(CH_KEY, String(h)); } catch(e){}
+}
+try { const saved = parseInt(localStorage.getItem(CH_KEY) || '', 10); if (saved > 0) setCH(saved); } catch(e){}
+grip.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  const y0 = e.clientY, h0 = composer.getBoundingClientRect().height;
+  grip.classList.add('drag'); grip.setPointerCapture(e.pointerId);
+  const move = ev => setCH(h0 + (y0 - ev.clientY));
+  const up = () => { grip.classList.remove('drag'); grip.removeEventListener('pointermove', move); grip.removeEventListener('pointerup', up); grip.removeEventListener('pointercancel', up); };
+  grip.addEventListener('pointermove', move); grip.addEventListener('pointerup', up); grip.addEventListener('pointercancel', up);
+});
 document.addEventListener('keydown', e => {
   const tag = (e.target && e.target.tagName) || '';
   if (tag === 'TEXTAREA' || tag === 'INPUT') return;
@@ -490,7 +523,7 @@ HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <div id="list"></div>
 <div id="tp"><div id="tpgrip"><span class="dots"></span><span class="who">BEATRICE</span><span class="cnt" id="tpcnt"></span></div><div id="tpbox"><div id="tpdoc"></div></div><div id="tpline"></div><div id="tpcorner"></div>
 <div id="tpstatus"></div></div>
-<div id="composer"><div class="in"><textarea id="rt" placeholder="Your answer to Claude. Cmd+Enter sends."></textarea>
+<div id="composer"><div id="grip" title="drag to resize"><i></i></div><div class="in"><textarea id="rt" placeholder="Your answer to Claude. Enter sends, Shift+Enter is a new line."></textarea>
 <div class="row"><button id="send">SEND TO CLAUDE</button><button id="rdraft" class="rd">READ</button><span id="rs"></span></div></div></div>
 </main>
 <div id="pill"><span class="grip"></span><button id="pb" title="previous sentence">⏮</button><button id="pp" title="play / pause">▶</button><button id="pn" title="next sentence">⏭</button>

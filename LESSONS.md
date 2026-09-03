@@ -55,3 +55,11 @@ What one day of building this taught, 2.9.2026. Each one cost something; none sh
 
 15. **One letter is a command.** W pushes, R reads (R 1.5 at speed). Act on the letter, say
     nothing first, put the summary on the clipboard when done.
+
+16. **Enter sends.** Marko, 3.9.2026: "when I press enter, it sends the message to you command
+    enter. It's too much work. Only enter works." Shift+Enter and Option+Enter make a new
+    line. A chord for the thing he does most is a tax on every answer.
+
+17. **The band between the log and the entry box is his to set.** A grip above the composer
+    drags the height; the textarea fills the band; the height is kept in localStorage per
+    browser and read inside a try. Nothing appears or disappears, the ratio changes.
