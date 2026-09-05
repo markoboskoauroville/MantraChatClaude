@@ -505,6 +505,7 @@ fetch('/api/messages?since=0&limit=300').then(r => r.json()).then(ms => {
 
 HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>MANTRA CHAT</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAzMiAzMic+PHJlY3Qgd2lkdGg9JzMyJyBoZWlnaHQ9JzMyJyByeD0nNycgZmlsbD0nIzBiMGQxMCcvPjxwYXRoIGQ9J002IDYuNWgyMGEzLjIgMy4yIDAgMCAxIDMuMiAzLjJ2OWEzLjIgMy4yIDAgMCAxLTMuMiAzLjJIMTVsLTYuMiA0LjJ2LTQuMkg2YTMuMiAzLjIgMCAwIDEtMy4yLTMuMnYtOUEzLjIgMy4yIDAgMCAxIDYgNi41eicgZmlsbD0nI2YyZGRiNCcvPjxjaXJjbGUgY3g9JzExLjMnIGN5PScxNC4yJyByPScyLjEnIGZpbGw9JyMwYjBkMTAnLz48Y2lyY2xlIGN4PScxNycgY3k9JzE0LjInIHI9JzIuMScgZmlsbD0nI2UyM2I0ZScvPjxjaXJjbGUgY3g9JzIyLjcnIGN5PScxNC4yJyByPScyLjEnIGZpbGw9JyMwYjBkMTAnLz48L3N2Zz4=">
 <style>%(css)s</style></head><body>
 <aside id="side"><div class="in">
 <h2>CLAUDE.AI BESIDE</h2>
