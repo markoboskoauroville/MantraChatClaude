@@ -4,8 +4,10 @@ chat_hook.py, the Claude Code side of MANTRA CHAT.
 
 Wired into ~/.claude/settings.json for every project:
 
-  SessionStart      chat_hook.py start    starts chatd if needed, opens the page,
-                                          prints the greeting Claude must relay
+  SessionStart      chat_hook.py start    if chatd is up: opens the page and prints the
+                                          greeting Claude must relay. Never starts her:
+                                          Marko starts her from the star menu (5.9.2026)
+  (by hand)         chat_hook.py launch   starts chatd; install.sh uses it once
   UserPromptSubmit  chat_hook.py prompt   mirrors what Marko typed in the terminal
   Stop              chat_hook.py stop     mirrors Claude's answer from the transcript
 
@@ -86,8 +88,24 @@ def main():
     project = os.path.basename(cwd.rstrip('/')) or cwd
     meta = {'session': session, 'cwd': cwd, 'project': project}
 
-    if event == 'start':
+    if event == 'launch':
+        # THE ONE EXPLICIT WAY TO START HER FROM HERE: install.sh, or Marko asking.
         url = server_url()
+        print('MANTRA CHAT is %s at %s.' % ('running' if url else 'NOT running', url or 'no port'))
+        return
+
+    if event == 'start':
+        # SHE IS NOT STARTED BY THE HOOK ANY MORE. Marko, 5.9.2026: "don't run
+        # sister up automatically until I ask you. I can run her through the
+        # David star menu." So the hook only looks: if she is up, it mirrors
+        # the session and prints the greeting; if not, it says so in one line
+        # and the session goes on without her.
+        url = alive()
+        if not url:
+            print('MANTRA CHAT is not running. Nothing was started: Marko starts her from the '
+                  'star menu (Sister) when he wants her. Do not start her yourself. Skip the '
+                  'chat greeting; the inbox Monitor may still be armed on ~/.tspeak/inbox.')
+            return
         bridge = os.environ.get('CLAUDE_CODE_BRIDGE_SESSION_ID', '')
         post(url, '/api/session', dict(meta, event='start', bridge=bridge))
         opened = post(url, '/api/open', {}) or {}

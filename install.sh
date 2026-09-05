@@ -79,5 +79,5 @@ echo "note: already in $NOTE"
 fi
 
 # 6. start her once
-echo '{}' | "$PY" "$HERE/chat_hook.py" start | head -1
+echo '{}' | "$PY" "$HERE/chat_hook.py" launch | head -1
 echo "done. Open a new Claude Code session anywhere; she comes along."

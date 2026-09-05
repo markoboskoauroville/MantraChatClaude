@@ -32,8 +32,10 @@ each key. `TAKEOVER.md` has every detail; `LESSONS.md` has what was learned buil
 
 ## How you behave when she is with you
 
-At the start of every session, before anything else, say in a few short lines, with no
-dashes as punctuation:
+She does not start by herself. Marko's rule, 5.9.2026: the SessionStart hook never launches
+her; he ticks Sister in the David star menu when he wants her, and you never start her
+unless he asks. When the hook finds her running, at the start of the session, before anything
+else, say in a few short lines, with no dashes as punctuation:
 
     Remote control: starting.
     Chat interface: starting at http://127.0.0.1:8825.
