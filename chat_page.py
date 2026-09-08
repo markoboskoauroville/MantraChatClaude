@@ -178,7 +178,7 @@ function tpNote(msg, bad){
 }
 const draftdoc = document.getElementById('draftdoc');
 const pill = document.getElementById('pill'), pp = document.getElementById('pp'), pspd = document.getElementById('pspd'), pfont = document.getElementById('pfont');
-let lastId = 0, lastClaude = 0, SPEED = 1, FONT = 26, current = null, pending = null;
+let lastId = 0, lastClaude = 0, SPEED = 1, FONT = 26, current = null, pending = null, SERVER_V = 0;
 const SPEEDS = [0.75, 1, 1.25, 1.5, 1.75, 2, 2.5];
 try { SPEED = parseFloat(localStorage.getItem('mantra.speed')) || 1; } catch(e){}
 try { FONT = parseInt(localStorage.getItem('mantra.font')) || 26; } catch(e){}
@@ -250,6 +250,13 @@ function add(m, scroll){
       const foot = document.createElement('div'); foot.className = 'foot';
       const rd = document.createElement('button'); rd.className = 'rd'; rd.textContent = 'READ';
       rd.onclick = () => readMsg(m, el, rd);
+      /* WHEREVER HE CLICKS, THE VOICE JUMPS THERE (Marko, 8.9.2026). A click in the card's text starts
+         the reading at that sentence; while the card is being read its sentences handle the click. */
+      el.querySelector('.body').addEventListener('click', e => {
+        if (current && current.msgEl === el) return;
+        if (e.target.closest('a,pre,code')) return;
+        readMsg(m, el, rd, snippetAt(e));
+      });
       const st = document.createElement('span'); st.className = 'st';
       foot.appendChild(rd); foot.appendChild(st); el.appendChild(foot);
     }
@@ -462,8 +469,31 @@ function endReading(){
   document.querySelectorAll('.msg.reading').forEach(e => e.classList.remove('reading'));
   document.querySelectorAll('.rd').forEach(b => { b.textContent = 'READ'; b.classList.remove('on'); });
 }
-function readPlan(url, payload, el, btn, st){
-  if (current && current.msgEl === el){ current.toggle(); return; }
+/* the text around a click: forty characters of the text node under the pointer, so the sentence
+   the click fell in can be found among the plan's sentences (the plan's text is the spoken form,
+   so offsets do not match; a window of words does) */
+function snippetAt(e){
+  let r = null;
+  try { r = document.caretRangeFromPoint ? document.caretRangeFromPoint(e.clientX, e.clientY) : null; } catch(err){}
+  if (!r || !r.startContainer) return '';
+  const n = r.startContainer, s = n.nodeType === 3 ? n.textContent : (n.textContent || ''), o = r.startOffset || 0;
+  return s.slice(Math.max(0, o - 24), o + 24);
+}
+const normTxt = s => (s || '').replace(/[`*#_>|]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+function sentenceFor(plan, snippet){
+  const key = normTxt(snippet); if (key.length < 6) return 0;
+  const sents = plan.sents.map(normTxt);
+  for (const win of [key, key.slice(8, 40), key.slice(16, 40)]){
+    if (win.length < 6) continue;
+    const i = sents.findIndex(t => t.includes(win)); if (i >= 0) return i;
+  }
+  /* no whole window inside one sentence: the sentence sharing the most words wins */
+  const words = key.split(' ').filter(w => w.length > 3); let best = 0, score = 0;
+  sents.forEach((t, i) => { const c = words.filter(w => t.includes(w)).length; if (c > score){ score = c; best = i; } });
+  return best;
+}
+function readPlan(url, payload, el, btn, st, startKey){
+  if (current && current.msgEl === el && !startKey){ current.toggle(); return; }
   endReading();
   st.textContent = ''; st.className = st.id === 'rs' ? '' : 'st'; noteEl = st;
   openTP(el); showPill();
@@ -475,14 +505,14 @@ function readPlan(url, payload, el, btn, st){
       if (ctl !== pending) return; pending = null;
       if (!plan.ok){ st.textContent = plan.error || 'nothing to read'; st.className = 'bad'; tpNote(plan.error || 'nothing to read', true); return; }
       current = new Reader(plan, el, btn, st);
-      current.start(0);
+      current.start(startKey ? sentenceFor(plan, startKey) : 0);
     }).catch(err => {
       if (ctl !== pending) return; pending = null;
       if (err && err.name === 'AbortError') return;
       st.textContent = 'Server not reachable'; st.className = 'bad'; tpNote('server not reachable', true);
     });
 }
-function readMsg(m, el, btn){ readPlan('/api/read/' + m.id + '/plan', {}, el, btn, el.querySelector('.st')); }
+function readMsg(m, el, btn, startKey){ readPlan('/api/read/' + m.id + '/plan', {}, el, btn, el.querySelector('.st'), startKey); }
 /* READ beside SEND: hear the draft before it goes */
 const composer = document.getElementById('composer'), rdraft = document.getElementById('rdraft');
 rdraft.onclick = () => {
@@ -677,6 +707,8 @@ document.addEventListener('keydown', e => {
 function connect(){
   const es = new EventSource('/api/events');
   es.onopen = () => dot.classList.add('on');
+  /* a new server (a restart after a change): this page is old, it reloads itself */
+  es.addEventListener('hello', ev => { try { const v = JSON.parse(ev.data).v; if (SERVER_V && v !== SERVER_V) location.reload(); SERVER_V = v; } catch(e){} });
   es.onerror = () => dot.classList.remove('on');
   es.onmessage = ev => {
     try {

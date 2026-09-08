@@ -71,6 +71,7 @@ SYNTH_LOCK = threading.Lock()
 SUBS = []
 MESSAGES = []
 STATE = {'port': BASE, 'pane': False}
+STARTED = int(__import__('time').time())   # this server's birth; the page reloads when it changes
 
 
 # ------------------------------------------------------------------ storage
@@ -179,6 +180,9 @@ def events():
             SUBS.append(q)
         try:
             yield 'retry: 2000\n\n'
+            # a new server: the page compares this with what it knew and reloads itself,
+            # so a restart after a change never leaves an old page on the screen
+            yield 'event: hello\ndata: %s\n\n' % json.dumps({'v': STARTED, 'port': STATE['port']})
             while True:
                 try:
                     rec = q.get(timeout=15)

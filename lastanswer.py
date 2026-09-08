@@ -76,21 +76,37 @@ def assistant_text(rec):
     return '\n\n'.join(parts)
 
 
+def has_tool_use(rec):
+    if rec.get('type') != 'assistant':
+        return False
+    c = (rec.get('message') or {}).get('content')
+    return isinstance(c, list) and any(isinstance(b, dict) and b.get('type') == 'tool_use' for b in c)
+
+
 def last_answer(recs, skip_current=True):
-    """Assistant text of the turn before the newest user message.
+    """THE ANSWER, not the whole turn: the last run of assistant text with no
+    tool call and no user record inside it. Marko, 8.9.2026: "now she's reading
+    everything from the beginning of our chat": a long turn of building says a
+    line before every tool, and a turn driven from MANTRA CHAT never sees a
+    typed user record, so collecting back to one gathered the whole evening.
+    The run ends at a tool call, a tool result, a notification or a typed
+    message; whatever Claude said while working stays in the terminal.
 
     With skip_current the newest real user record (the T itself) is passed
-    over first, so whatever Claude says while running the tool is not read
-    aloud; text is then collected back to the previous real user record."""
+    over first, so the answer before it is the one read."""
     i = len(recs) - 1
     if skip_current:
         while i >= 0 and not is_real_user(recs[i]):
             i -= 1
         i -= 1
+    while i >= 0 and not assistant_text(recs[i]):             # down to the last spoken text
+        if recs[i].get('type') == 'user' and is_real_user(recs[i]):
+            return ''
+        i -= 1
     parts = []
     while i >= 0:
         r = recs[i]
-        if is_real_user(r):
+        if r.get('type') == 'user' or has_tool_use(r):
             break
         t = assistant_text(r)
         if t:
