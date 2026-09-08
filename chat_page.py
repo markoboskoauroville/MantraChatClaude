@@ -95,19 +95,19 @@ body.pinned #pin{color:var(--amber);border-color:var(--amber)}
 .sent .w{border-radius:4px}
 .sent.active .w.now,.sent.paused .w.now{background:var(--wordbg);color:var(--wordfg);padding:0 2px;margin:0 -2px;
   -webkit-box-decoration-break:clone;box-decoration-break:clone}
-/* the floating pill */
-#pill{position:fixed;left:50%;bottom:120px;transform:translateX(-50%);display:none;align-items:center;gap:6px;
-  background:#151a21;border:1px solid var(--slate);border-radius:999px;padding:8px 10px;box-shadow:0 12px 40px rgba(0,0,0,.6);
-  z-index:30;user-select:none;touch-action:none;cursor:grab}
-#pill.on{display:flex}
-#pill.drag{cursor:grabbing}
-#pill button{background:transparent;color:var(--ink);border:1px solid transparent;border-radius:999px;width:40px;height:40px;
-  font:700 15px/1 ui-monospace,Menlo,monospace;cursor:pointer;display:flex;align-items:center;justify-content:center}
+/* THE CONTROLS SIT BESIDE READ (Marko, 8.9.2026: "while reading a card, next to the reading button,
+   add all these controls: play, skip, speed, and font size"). The same pill, no longer floating: it
+   is moved into the foot of the card being read, and shown only there. */
+#pill{display:none;align-items:center;gap:2px;background:#151a21;border:1px solid var(--slate);border-radius:999px;
+  padding:3px 6px;user-select:none}
+#pill.on{display:inline-flex}
+#pill button{background:transparent;color:var(--ink);border:1px solid transparent;border-radius:999px;width:30px;height:30px;
+  font:700 13px/1 ui-monospace,Menlo,monospace;cursor:pointer;display:flex;align-items:center;justify-content:center}
 #pill button:hover{border-color:var(--slate)}
-#pill #pp{background:var(--amber);color:#0b0d10;width:52px}
+#pill #pp{background:var(--amber);color:#0b0d10;width:40px}
 #pill #px{color:#e23b4e}
-#pill .v{font:700 11px/1 ui-monospace,Menlo,monospace;color:var(--amber);min-width:38px;text-align:center}
-#pill .grip{width:10px;height:22px;border-left:2px dotted var(--dim);border-right:2px dotted var(--dim);margin:0 4px}
+#pill .v{font:700 10.5px/1 ui-monospace,Menlo,monospace;color:var(--amber);min-width:30px;text-align:center}
+#pill .grip{display:none}
 /* THE COMPOSER IS A BAND WHOSE HEIGHT HE SETS. His request, 3.9.2026: "make possible to change
    size of the chat box so there is a chat like a log and there is entry box. I want to be able
    with mouse to change the ratio of that two". The grip above the band drags; the textarea
@@ -316,11 +316,12 @@ function draggable(el, handle, key, opts){
     if (p && p.l){ el.style.transform = 'none'; el.style.left = p.l; el.style.top = p.t; el.style.bottom = 'auto';
       if (opts && opts.size && p.w){ el.style.width = p.w; el.style.height = p.h; } } } catch(e){}
 }
-draggable(pill, pill, 'mantra.pill');
+try { localStorage.removeItem('mantra.pill'); } catch(e){}      /* the pill no longer floats or remembers a place */
 draggable(tp, document.getElementById('tpgrip'), 'mantra.tp', {size: true});
 document.getElementById('pb').onclick = () => { if (current) current.skip(-1); };
 document.getElementById('pn').onclick = () => { if (current) current.skip(1); };
-function showPill(){ pill.classList.add('on'); pspd.textContent = fmtSpeed(); pfont.textContent = FONT; }
+/* the controls go into the foot of the card being read, right after its READ button */
+function showPill(btn){ if (btn) btn.insertAdjacentElement('afterend', pill); pill.classList.add('on'); pspd.textContent = fmtSpeed(); pfont.textContent = FONT; }
 function hidePill(){ pill.classList.remove('on'); }
 
 /* ---------------------------------------------------------- the reader */
@@ -496,7 +497,7 @@ function readPlan(url, payload, el, btn, st, startKey){
   if (current && current.msgEl === el && !startKey){ current.toggle(); return; }
   endReading();
   st.textContent = ''; st.className = st.id === 'rs' ? '' : 'st'; noteEl = st;
-  openTP(el); showPill();
+  openTP(el); showPill(btn);
   tpNote('asking ' + vlabel() + '…'); btn.textContent = 'WAITING'; btn.classList.add('on');
   pending = new AbortController();
   const ctl = pending;
@@ -743,7 +744,7 @@ HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <div class="btns"><button class="b ghost" id="cloneme">CLONE MY VOICE · 15 SECONDS</button></div>
 <p id="vst"></p>
 <h2>READING</h2>
-<p>READ lights the words in the card itself, one window: the sentence being read yellow, the word red, the sentence brought to the top edge of the log so the eyes stay put. A click on a sentence jumps there. The control pill has previous and next sentence, play and pause, speed minus and plus, font minus and plus, and X to end. Drag the pill anywhere. P pauses, arrows skip, Escape ends, plus and minus change the font.</p>
+<p>READ lights the words in the card itself, one window: the sentence being read yellow, the word red, the sentence brought to the top edge of the log so the eyes stay put. A click anywhere in a card starts the voice at that sentence. While a card is read, its controls sit beside READ: previous and next sentence, play and pause, speed minus and plus, font minus and plus, and X to end. P pauses, arrows skip, Escape ends, plus and minus change the font.</p>
 <h2>SESSIONS</h2><div id="sessions"></div>
 </div></aside>
 <main id="main">
