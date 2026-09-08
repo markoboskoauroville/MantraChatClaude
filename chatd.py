@@ -23,6 +23,11 @@ except Speechify through the ring when READ is pressed.
   POST /api/pane            {open: true|false} claude.ai window beside the page
   POST /api/open            open the page in the browser if nobody has it open
   POST /api/session         {event, session, cwd, project, bridge}
+  GET  /api/voice           {engine, voice, voices, ears, clone}  how the sister talks (voice.py)
+  POST /api/voice           {engine?, voice?}  choose: a cloned voice (local) or Beatrice
+  POST /api/hear?send=1     the browser's recording in the body -> Whisper -> {text}; with send=1
+                            the words go to the session as if typed (TALK, the space bar)
+  POST /api/voice/clone?name=marko   a recording in the body becomes a new cloned voice
 """
 
 import base64
@@ -45,6 +50,7 @@ from speechify import synth                    # noqa: E402
 from page import sentences_of                  # noqa: E402
 from lastanswer import plain, chunk, sentences, _split_long   # noqa: E402
 from chat_page import page_html                # noqa: E402
+import voice as V                              # noqa: E402  the ears and the cloned voice
 
 HOST = '127.0.0.1'
 BASE = int(os.environ.get('TSPEAK_INBOX_PORT', '8825'))
@@ -145,13 +151,15 @@ def cors(resp):
 
 @app.route('/', methods=['GET'])
 def index():
+    V.warm()                       # the ears and the voice load while he reads the page
     return Response(page_html(STATE['port']), mimetype='text/html')
 
 
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({'ok': True, 'port': STATE['port'], 'clients': len(SUBS),
-                    'messages': len(MESSAGES), 'pane': STATE['pane'], 'inbox': INBOX})
+                    'messages': len(MESSAGES), 'pane': STATE['pane'], 'inbox': INBOX,
+                    'voice': who()})
 
 
 @app.route('/api/messages', methods=['GET'])
@@ -360,7 +368,7 @@ def read_draft_plan():
     plan = PLANS.get(pid) or read_plan(pid) or make_plan(pid, text)
     if not plan['count']:
         return jsonify({'ok': False, 'error': 'nothing to read'}), 400
-    return jsonify(dict(plan, ok=True))
+    return jsonify(dict(plan, ok=True, who=who()))
 
 
 @app.route('/api/read/<int:mid>/plan', methods=['POST', 'OPTIONS'])
@@ -373,7 +381,7 @@ def read_plan_route(mid):
         return jsonify({'ok': False, 'error': 'no such message'}), 404
     if not plan['count']:
         return jsonify({'ok': False, 'error': 'nothing to read'}), 400
-    return jsonify(dict(plan, ok=True))
+    return jsonify(dict(plan, ok=True, who=who()))
 
 
 @app.route('/api/read/<mid>/sent/<int:n>', methods=['POST', 'OPTIONS'])
@@ -384,13 +392,43 @@ def read_sentence(mid, n):
     plan = read_plan(mid)
     if plan is None or n < 0 or n >= plan['count']:
         return jsonify({'ok': False, 'error': 'no such sentence'}), 404
+    w = who()
+    text = plan['sents'][n]
+    if w['engine'] == 'clone':
+        # THE CLONED VOICE: local, free, cached per voice and model (voice.py). The
+        # sister's cache file is named after the voice so Beatrice's clips and a
+        # clone's never mix, and switching voices re-reads nothing already made.
+        cache = os.path.join(AUDIO, mid, '%d.%s-%s.json' % (n, w['voice'], w['model']))
+        if os.path.isfile(cache):
+            with open(cache, encoding='utf-8') as fh:
+                data = json.load(fh)
+            data['cached'] = True
+            return jsonify(data)
+        try:
+            with SYNTH_LOCK:
+                audio, tokens = V.clone_clip(text, w['voice'])
+        except RuntimeError as e:
+            log('read %s/%d (%s) failed: %s' % (mid, n, w['voice'], e))
+            return jsonify({'ok': False, 'error': str(e)}), 502
+        from speechify import proportional_tokens
+        prop = not tokens
+        if prop:
+            tokens = proportional_tokens(text)
+        clip = {'src': 'data:audio/mpeg;base64,' + base64.b64encode(audio).decode('ascii'),
+                'prop': prop, 'text': text, 'words': tokens,
+                'dur': (tokens[-1]['d'] if tokens and not prop else 0)}
+        data = {'ok': True, 'id': mid, 'n': n, 'clip': clip, 'billed': 0, 'key': w['label'], 'cached': False}
+        os.makedirs(os.path.dirname(cache), exist_ok=True)
+        with open(cache, 'w', encoding='utf-8') as fh:
+            json.dump(data, fh)
+        log('read %s/%d: %d chars in %s' % (mid, n, len(text), w['label']))
+        return jsonify(data)
     cache = os.path.join(AUDIO, mid, '%d.json' % n)
     if os.path.isfile(cache):
         with open(cache, encoding='utf-8') as fh:
             data = json.load(fh)
         data['cached'] = True
         return jsonify(data)
-    text = plan['sents'][n]
     with SYNTH_LOCK:
         ring = Ring()
         if not ring.keys:
@@ -412,6 +450,132 @@ def read_sentence(mid, n):
         json.dump(data, fh)
     log('read %s/%d: %d chars on %s %s' % (mid, n, billed, label, masked))
     return jsonify(data)
+
+
+# -------------------------------------------------------- the ears, the voice
+MIC = os.path.join(DIR, 'mic')
+
+
+def who():
+    """How the sister talks right now: {engine, voice, model, label}. The choice
+    is the whole system's (~/.voice/voice.json), so the teachers and every READ
+    button follow the same voice."""
+    c = V.conf()
+    if c.get('engine') == 'clone' and V.AVAILABLE:
+        return {'engine': 'clone', 'voice': c['voice'], 'model': c.get('model', ''), 'label': c['voice']}
+    return {'engine': 'beatrice', 'voice': 'beatrice', 'model': 'speechify', 'label': 'Beatrice'}
+
+
+@app.route('/api/voice', methods=['GET', 'POST', 'OPTIONS'])
+def api_voice():
+    if request.method == 'OPTIONS':
+        return ('', 204)
+    if request.method == 'POST':
+        d = body()
+        V.set_conf(d.get('engine'), d.get('voice'))
+        if who()['engine'] == 'clone':
+            V.warm()
+    w = who()
+    st = V.status()
+    return jsonify(dict(w, ok=True, available=V.AVAILABLE, why=V.why_not(),
+                        voices=[v['name'] for v in V.voices()], ears=st.get('ears'), clone=st.get('clone')))
+
+
+def save_recording(raw, mime):
+    """The browser's recording (webm/opus, or whatever it made) to a wav the
+    ears can read. Returns (wav path, stamp)."""
+    ext = 'webm'
+    if 'ogg' in mime:
+        ext = 'ogg'
+    elif 'mp4' in mime or 'aac' in mime or 'm4a' in mime:
+        ext = 'm4a'
+    elif 'wav' in mime:
+        ext = 'wav'
+    os.makedirs(MIC, exist_ok=True)
+    stamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
+    src = os.path.join(MIC, stamp + '.in.' + ext)       # never the same name as the wav it becomes
+    with open(src, 'wb') as fh:
+        fh.write(raw)
+    wav = os.path.join(MIC, stamp + '.wav')
+    try:
+        V.to_wav(src, wav)
+    finally:
+        try:
+            os.remove(src)
+        except OSError:
+            pass
+    return wav, stamp
+
+
+@app.route('/api/hear', methods=['POST', 'OPTIONS'])
+def api_hear():
+    """TALK: the recording comes in the body, Whisper writes it down, and with
+    send=1 the words go to the session the way typed words do (a MARKO card,
+    a file in the inbox). Nothing is kept but the last few wavs in ~/.tspeak/mic."""
+    if request.method == 'OPTIONS':
+        return ('', 204)
+    raw = request.get_data()
+    if not raw or len(raw) < 200:
+        return jsonify({'ok': False, 'error': 'nothing recorded'}), 400
+    try:
+        wav, stamp = save_recording(raw, request.content_type or request.args.get('mime') or '')
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
+        return jsonify({'ok': False, 'error': 'ffmpeg could not read the recording: %s' % str(e)[:120]}), 400
+    if not V.loud_enough(wav):
+        return jsonify({'ok': False, 'error': 'I heard nothing above the room'}), 200
+    try:
+        text, secs = V.hear(wav)
+    except RuntimeError as e:
+        log('hear failed: %s' % e)
+        return jsonify({'ok': False, 'error': str(e)}), 502
+    log('hear %s: %.1fs "%s"' % (stamp, secs, text[:80]))
+    tidy_mic()
+    if not text:
+        return jsonify({'ok': False, 'error': 'I could not make out any words'}), 200
+    out = {'ok': True, 'text': text, 'secs': round(secs, 2)}
+    if request.args.get('send') in ('1', 'true', 'yes'):
+        page = request.args.get('page') or ''
+        path = write_inbox(text, page)
+        rec = append('marko', text, source='voice', reply_to=page)
+        out.update({'sent': True, 'id': rec['id'], 'file': path})
+    return jsonify(out)
+
+
+def tidy_mic(keep=12):
+    try:
+        files = sorted(f for f in os.listdir(MIC) if f.endswith('.wav'))
+        for f in files[:-keep]:
+            os.remove(os.path.join(MIC, f))
+    except OSError:
+        pass
+
+
+@app.route('/api/voice/clone', methods=['POST', 'OPTIONS'])
+def api_voice_clone():
+    """CLONE MY VOICE: a recording of a few sentences (six to thirty seconds)
+    becomes a new voice, and the sister talks with it from now on."""
+    if request.method == 'OPTIONS':
+        return ('', 204)
+    raw = request.get_data()
+    name = ''.join(c if c.isalnum() or c in '_-' else '_' for c in (request.args.get('name') or 'marko').strip()) or 'marko'
+    if not raw or len(raw) < 2000:
+        return jsonify({'ok': False, 'error': 'nothing recorded'}), 400
+    try:
+        wav, stamp = save_recording(raw, request.content_type or '')
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
+        return jsonify({'ok': False, 'error': 'ffmpeg could not read the recording: %s' % str(e)[:120]}), 400
+    if not V.loud_enough(wav):
+        return jsonify({'ok': False, 'error': 'I heard nothing above the room'}), 200
+    try:
+        with SYNTH_LOCK:
+            name = V.add_voice(name, wav)
+        V.set_conf('clone', name)
+    except RuntimeError as e:
+        log('clone failed: %s' % e)
+        return jsonify({'ok': False, 'error': str(e)}), 502
+    log('new voice %s from %s' % (name, stamp))
+    V.warm()
+    return jsonify(dict(who(), ok=True, voices=[v['name'] for v in V.voices()]))
 
 
 # --------------------------------------------------------------------- pane

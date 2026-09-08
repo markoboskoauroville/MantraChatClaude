@@ -63,3 +63,19 @@ What one day of building this taught, 2.9.2026. Each one cost something; none sh
 17. **The band between the log and the entry box is his to set.** A grip above the composer
     drags the height; the textarea fills the band; the height is kept in localStorage per
     browser and read inside a try. Nothing appears or disappears, the ratio changes.
+
+## 8.9.2026, the ears and the second voice
+
+- The sister talks and listens through MANTRA_VOICE (voice.py imports ears, clone, timing) and
+  starts their socket servers herself; she never needs voiced.py to be up, and she never builds a
+  second model server. The choice of voice is the system's (~/.voice/voice.json), so the chip on
+  her page changes how every app on the Mac talks.
+- The microphone is the browser's (MediaRecorder, webm/opus), sent whole to /api/hear; ffmpeg
+  makes it a 16 kHz wav there. The mouth closes when the ear opens: a reading is paused before the
+  microphone starts, or the ears send the sister's own words back as Marko's.
+- The space bar talks. Inside the entry box it still types, unless the box is empty. The reader's
+  play and pause moved to P; arrows, Escape, plus and minus stayed.
+- A cloned voice's clips are cached under a name that carries the voice and the model
+  (<n>.<voice>-<model>.json), so Beatrice's and a clone's never mix and switching re-reads nothing.
+- A wav uploaded to /api/hear must not be written under the name ffmpeg will write to: the input
+  is <stamp>.in.<ext>, the output <stamp>.wav.

@@ -130,6 +130,27 @@ body.pinned #pin{color:var(--amber);border-color:var(--amber)}
 #rs.ok{color:var(--amber)}
 #rs.bad{color:#e23b4e}
 #empty{text-align:center;color:var(--dim);padding:60px 20px;font-size:15px}
+/* TALK: the microphone button beside SEND, green when it waits, red and pulsing while it listens,
+   amber while Whisper writes; a small level bar so he sees he is heard; CANCEL while listening. */
+#talk{background:#3fb862;color:#0b0d10;border:0;border-radius:999px;font:700 12px/1 ui-monospace,Menlo,monospace;
+  letter-spacing:.1em;padding:12px 18px;cursor:pointer;transition:background .2s;min-width:96px}
+#talk.listening{background:#e23b4e;color:#fff;animation:pulse 1.2s infinite}
+#talk.thinking{background:#8a6a2a;color:#fff}
+#cancel{background:#3a2323;color:#e08a8a;border:0;border-radius:999px;font:700 11px/1 ui-monospace,Menlo,monospace;
+  letter-spacing:.1em;padding:12px 14px;cursor:pointer}
+#cancel:hover{background:#5a2a2a;color:#fff}
+#vu{width:64px;height:10px;border-radius:5px;background:#1c222b;border:1px solid var(--line);overflow:hidden;position:relative;flex:none}
+#vu i{position:absolute;left:0;top:0;bottom:0;width:0;transition:width .08s linear;
+  background:linear-gradient(90deg,#3fb862 0,#3fb862 60%,#e0c040 80%,#d04a3a 100%)}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(226,59,78,.5)}70%{box-shadow:0 0 0 10px rgba(226,59,78,0)}100%{box-shadow:0 0 0 0 rgba(226,59,78,0)}}
+/* the voice chip and AUTO VOICE in the top bar; the voices in the side pane */
+#vchip,#auto{background:transparent;border:1px solid var(--slate);color:var(--dim);border-radius:999px;font:700 10px/1 ui-monospace,Menlo,monospace;
+  letter-spacing:.1em;padding:6px 9px;cursor:pointer;white-space:nowrap}
+#vchip{color:var(--amber);border-color:var(--amber)}
+#auto.on{color:#3fb862;border-color:#3fb862}
+#voices{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
+#voices .b.on{background:var(--amber);color:#0b0d10;border-color:var(--amber)}
+#vst{font:12px/1.5 ui-monospace,Menlo,monospace;color:var(--dim);min-height:18px}
 """
 
 ICON = ('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round">'
@@ -226,6 +247,7 @@ function add(m, scroll){
   }
   list.appendChild(el);
   if (scroll) list.scrollTop = list.scrollHeight;
+  return el;
 }
 
 /* ---------------------------------------------------------- the pill */
@@ -330,7 +352,7 @@ class Reader {
     fetch('/api/read/' + this.mid + '/sent/' + i, {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}', signal: ctl.signal})
       .then(r => r.json()).then(j => {
         if (this.dead) return; delete this.inflight[i];
-        if (!j.ok){ this.st.textContent = j.error || 'Speechify failed'; this.st.className = 'st bad'; tpNote(j.error || 'Speechify failed', true); if (this.waiting === i) this.waiting = -1; return; }
+        if (!j.ok){ this.st.textContent = j.error || 'the voice failed'; this.st.className = 'st bad'; tpNote(j.error || 'the voice failed', true); if (this.waiting === i) this.waiting = -1; return; }
         this.clips[i] = j.clip; this.fill(i);
         if (!j.cached) this.spent = (this.spent || 0) + (j.billed || 0);
         this.st.textContent = (this.spent ? this.spent + ' characters' : 'from cache') + ' · ' + (i + 1) + '/' + this.n + ' ready';
@@ -342,7 +364,7 @@ class Reader {
   /* play sentence i now, or wait for it, and ask for the one after */
   start(i){
     if (i >= this.n){ this.finish(); return; }
-    if (!this.clips[i]){ this.waiting = i; this.ensure(i); tpNote(i > 0 ? 'caching next sentence…' : 'asking Beatrice…'); return; }
+    if (!this.clips[i]){ this.waiting = i; this.ensure(i); tpNote(i > 0 ? 'caching next sentence…' : 'asking ' + vlabel() + '…'); return; }
     tpNote(this.clips.filter(Boolean).length + ' / ' + this.n + ' cached'); document.getElementById('tpcnt').textContent = (i + 1) + ' / ' + this.n;
     this.ci = i; this.handed = false; this.lastSent = -1; this.lastWord = -2; this.scale = 1; this.clk.ready = false;
     this.a.src = this.clips[i].src; this.a.defaultPlaybackRate = SPEED; this.a.playbackRate = SPEED;
@@ -417,7 +439,7 @@ function readPlan(url, payload, el, btn, st){
   endReading();
   st.textContent = ''; st.className = st.id === 'rs' ? '' : 'st';
   openTP(el); showPill();
-  tpNote('asking Beatrice…'); btn.textContent = 'WAITING'; btn.classList.add('on');
+  tpNote('asking ' + vlabel() + '…'); btn.textContent = 'WAITING'; btn.classList.add('on');
   pending = new AbortController();
   const ctl = pending;
   fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload || {}), signal: ctl.signal})
@@ -477,10 +499,145 @@ grip.addEventListener('pointerdown', e => {
   const up = () => { grip.classList.remove('drag'); grip.removeEventListener('pointermove', move); grip.removeEventListener('pointerup', up); grip.removeEventListener('pointercancel', up); };
   grip.addEventListener('pointermove', move); grip.addEventListener('pointerup', up); grip.addEventListener('pointercancel', up);
 });
+/* ---------------------------------------------------------- the voice */
+/* Marko, 8.9.2026: "I need a record button which I can also toggle with the space bar to talk with
+   you, and then I want to listen with my locally cloned voice what you are saying." The voice the
+   sister talks with is the whole system's choice (~/.voice/voice.json): a cloned voice, local and
+   free, or Beatrice. The chip in the top bar cycles through them; the side pane lists them. */
+const talkBtn = document.getElementById('talk'), vu = document.getElementById('vu').firstElementChild, cancelBtn = document.getElementById('cancel');
+const vchip = document.getElementById('vchip'), autoBtn = document.getElementById('auto'), voicesEl = document.getElementById('voices'), vst = document.getElementById('vst');
+let VOICE = {engine: 'beatrice', label: 'Beatrice', voices: []}, AUTO = true, MIC = 'idle', rec = null, chunks = [], stream = null, actx = null, vuRaf = null, micTimer = null, queued = [];
+try { AUTO = localStorage.getItem('mantra.auto') !== '0'; } catch(e){}
+function vlabel(){ return VOICE.label || 'Beatrice'; }
+function paintVoice(){
+  vchip.textContent = 'VOICE: ' + vlabel().toUpperCase();
+  document.querySelector('#tpgrip .who').textContent = vlabel().toUpperCase();
+  autoBtn.classList.toggle('on', AUTO); autoBtn.textContent = AUTO ? 'AUTO VOICE ON' : 'AUTO VOICE OFF';
+  voicesEl.innerHTML = '';
+  const all = [{name: 'beatrice', label: 'Beatrice · Speechify'}].concat((VOICE.voices || []).map(n => ({name: n, label: n + ' · cloned, local'})));
+  all.forEach(v => {
+    const on = v.name === 'beatrice' ? VOICE.engine === 'beatrice' : (VOICE.engine === 'clone' && VOICE.voice === v.name);
+    const b = document.createElement('button'); b.className = 'b ghost' + (on ? ' on' : ''); b.textContent = v.label.toUpperCase();
+    b.onclick = () => setVoice(v.name); voicesEl.appendChild(b);
+  });
+  if (VOICE.available === false) vst.textContent = 'Only Beatrice here: ' + (VOICE.why || 'MANTRA_VOICE is not on this Mac.');
+}
+function loadVoice(){ return fetch('/api/voice').then(r => r.json()).then(j => { VOICE = j; paintVoice(); }).catch(() => {}); }
+function setVoice(name){
+  const body = name === 'beatrice' ? {engine: 'beatrice'} : {engine: 'clone', voice: name};
+  vst.textContent = 'switching …';
+  fetch('/api/voice', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})
+    .then(r => r.json()).then(j => { VOICE = j; paintVoice(); vst.textContent = 'The sister talks with ' + vlabel() + ' now.'; })
+    .catch(() => { vst.textContent = 'Server not reachable.'; });
+}
+vchip.onclick = () => {
+  const names = ['beatrice'].concat(VOICE.voices || []);
+  const cur = VOICE.engine === 'beatrice' ? 'beatrice' : VOICE.voice;
+  setVoice(names[(names.indexOf(cur) + 1) % names.length]);
+};
+autoBtn.onclick = () => { AUTO = !AUTO; try { localStorage.setItem('mantra.auto', AUTO ? '1' : '0'); } catch(e){} paintVoice(); };
+loadVoice();
+
+/* THE MICROPHONE. TALK or the space bar opens it; TALK or the space bar again sends: the recording
+   goes to the server, Whisper (local, on the GPU) writes it down, and the words reach the session as
+   if typed. Escape throws the recording away. The mouth closes first: a reading is paused when the
+   microphone opens, or it would hear the sister and send her words back as his. Ninety seconds at most. */
+function micState(s){
+  MIC = s; talkBtn.className = s;
+  talkBtn.textContent = s === 'listening' ? 'STOP · SEND' : s === 'thinking' ? '…' : 'TALK';
+  cancelBtn.hidden = s !== 'listening'; if (s !== 'listening') vu.style.width = '0';
+}
+function meter(){
+  if (!actx || MIC !== 'listening') return;
+  const a = actx.analyser, buf = new Uint8Array(a.fftSize); a.getByteTimeDomainData(buf);
+  let sum = 0; for (let i = 0; i < buf.length; i++){ const v = (buf[i] - 128) / 128; sum += v * v; }
+  vu.style.width = Math.min(100, Math.round(Math.sqrt(sum / buf.length) * 400)) + '%';
+  vuRaf = requestAnimationFrame(meter);
+}
+function pickMime(){ return ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', ''].find(m => !m || (window.MediaRecorder && MediaRecorder.isTypeSupported(m))) || ''; }
+async function startMic(){
+  if (MIC !== 'idle') return;
+  if (!navigator.mediaDevices || !window.MediaRecorder){ status('This browser cannot record.', 'bad'); return; }
+  if (current) current.pause();
+  try { stream = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true}}); }
+  catch(e){ status('The microphone is not allowed: System Settings › Privacy & Security › Microphone › Google Chrome.', 'bad'); return; }
+  const AC = window.AudioContext || window.webkitAudioContext; actx = new AC();
+  actx.analyser = actx.createAnalyser(); actx.analyser.fftSize = 1024; actx.createMediaStreamSource(stream).connect(actx.analyser);
+  const mime = pickMime(); chunks = [];
+  rec = new MediaRecorder(stream, mime ? {mimeType: mime} : undefined);
+  rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+  rec.start(250); micState('listening'); status('listening … the space bar or STOP sends, Escape cancels'); meter();
+  micTimer = setTimeout(() => stopMic(true), 90000);
+}
+function closeMic(){
+  if (micTimer) clearTimeout(micTimer); micTimer = null;
+  if (vuRaf) cancelAnimationFrame(vuRaf); vuRaf = null;
+  if (stream) stream.getTracks().forEach(t => t.stop()); stream = null;
+  if (actx){ try { actx.close(); } catch(e){} } actx = null;
+}
+function stopMic(send){
+  if (MIC !== 'listening' || !rec) return;
+  const r = rec, mime = r.mimeType || 'audio/webm'; rec = null;
+  r.onstop = () => {
+    closeMic();
+    if (!send){ micState('idle'); chunks = []; status('cancelled, nothing sent'); return; }
+    const blob = new Blob(chunks, {type: mime}); chunks = [];
+    micState('thinking'); status('writing it down …');
+    fetch('/api/hear?send=1&page=' + lastClaude, {method: 'POST', headers: {'Content-Type': mime}, body: blob})
+      .then(x => x.json()).then(j => {
+        micState('idle');
+        if (!j.ok){ status(j.error || 'the ears failed', 'bad'); return; }
+        status('Sent to Claude ' + tm(new Date().toISOString()) + ' · heard in ' + j.secs + ' s', 'ok');
+        if (queued.length){ const q = queued.shift(); queued.length = 0; speakCard(q[0], q[1]); }
+      }).catch(() => { micState('idle'); status('Server not reachable.', 'bad'); });
+  };
+  try { r.stop(); } catch(e){ r.onstop(); }
+}
+function toggleMic(){ if (MIC === 'listening') stopMic(true); else if (MIC === 'idle') startMic(); }
+talkBtn.onclick = toggleMic;
+cancelBtn.onclick = () => stopMic(false);
+/* AUTO VOICE: an answer of Claude is spoken the moment it arrives, in the chosen voice. Never into an
+   open microphone: while he talks it waits, and speaks once his words have gone. */
+function speakCard(m, el){
+  const btn = el.querySelector('.rd'); if (!btn) return;
+  if (MIC !== 'idle'){ queued.push([m, el]); return; }
+  readMsg(m, el, btn);
+}
+/* CLONE MY VOICE: fifteen seconds of him reading anything, naturally. The model is shown the sample
+   with every sentence it speaks; nothing is trained, nothing leaves the Mac. */
+document.getElementById('cloneme').onclick = async () => {
+  if (MIC !== 'idle') return;
+  let s; try { s = await navigator.mediaDevices.getUserMedia({audio: true}); } catch(e){ vst.textContent = 'The microphone is not allowed.'; return; }
+  const mime = pickMime(), parts = [];
+  const r = new MediaRecorder(s, mime ? {mimeType: mime} : undefined); r.ondataavailable = e => { if (e.data.size) parts.push(e.data); };
+  let left = 15; MIC = 'cloning'; talkBtn.disabled = true; vst.textContent = 'Read anything aloud, naturally … ' + left;
+  const iv = setInterval(() => { left--; vst.textContent = 'Read anything aloud, naturally … ' + left; if (left <= 0){ clearInterval(iv); r.stop(); } }, 1000);
+  r.onstop = () => {
+    s.getTracks().forEach(t => t.stop());
+    vst.textContent = 'Cutting the sample and writing its words …';
+    fetch('/api/voice/clone?name=marko', {method: 'POST', headers: {'Content-Type': r.mimeType || 'audio/webm'}, body: new Blob(parts, {type: r.mimeType})})
+      .then(x => x.json()).then(j => {
+        MIC = 'idle'; talkBtn.disabled = false;
+        if (!j.ok){ vst.textContent = j.error || 'cloning failed'; return; }
+        VOICE = Object.assign(VOICE, j); paintVoice();
+        vst.textContent = 'Your voice is here as "' + j.voice + '" and the sister talks with it now. READ on any card to hear it.';
+      }).catch(() => { MIC = 'idle'; talkBtn.disabled = false; vst.textContent = 'Server not reachable.'; });
+  };
+  r.start(250);
+};
+
 document.addEventListener('keydown', e => {
   const tag = (e.target && e.target.tagName) || '';
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  /* THE SPACE BAR TALKS (Marko, 8.9.2026). In the entry box it still types, unless the box is empty. */
+  if (e.code === 'Space'){
+    if (tag === 'INPUT') return;
+    if (tag === 'TEXTAREA' && rt.value.trim()) return;
+    e.preventDefault(); toggleMic(); return;
+  }
+  if (e.key === 'Escape' && MIC === 'listening'){ e.preventDefault(); stopMic(false); return; }
   if (tag === 'TEXTAREA' || tag === 'INPUT') return;
-  if (e.code === 'Space' && current){ e.preventDefault(); current.toggle(); }
+  if ((e.key === 'p' || e.key === 'P') && current) current.toggle();
   if (e.key === 'ArrowLeft' && current) current.skip(-1);
   if (e.key === 'ArrowRight' && current) current.skip(1);
   if (e.key === 'Escape' && (current || pending)) endReading();
@@ -493,7 +650,13 @@ function connect(){
   const es = new EventSource('/api/events');
   es.onopen = () => dot.classList.add('on');
   es.onerror = () => dot.classList.remove('on');
-  es.onmessage = ev => { try { add(JSON.parse(ev.data), nearBottom()); } catch(e){} };
+  es.onmessage = ev => {
+    try {
+      const m = JSON.parse(ev.data), el = add(m, nearBottom());
+      /* AUTO VOICE: a fresh answer of Claude (not one replayed after a reconnect) is spoken at once */
+      if (el && m.role === 'claude' && AUTO && Math.abs(Date.now() - new Date(m.time).getTime()) < 120000) speakCard(m, el);
+    } catch(e){}
+  };
 }
 setFont(FONT);
 fetch('/api/messages?since=0&limit=300').then(r => r.json()).then(ms => {
@@ -514,18 +677,23 @@ HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <p id="pst"></p>
 <div class="btns"><a class="b ghost" href="https://claude.ai/new" target="_blank" rel="noopener">NEW CHAT ON CLAUDE.AI</a>
 <a class="b ghost" id="sesslink" href="#" target="_blank" rel="noopener" style="display:none">THIS SESSION ON CLAUDE.AI</a></div>
+<h2>VOICE</h2>
+<p>TALK, or the space bar, opens the microphone; TALK or the space bar again sends the words to Claude, written down by Whisper here on this Mac. Escape throws a recording away. With AUTO VOICE on, every answer is spoken as it arrives, in the voice chosen here, the sentence and the word lit.</p>
+<div id="voices"></div>
+<div class="btns"><button class="b ghost" id="cloneme">CLONE MY VOICE · 15 SECONDS</button></div>
+<p id="vst"></p>
 <h2>TELEPROMPTER</h2>
-<p>READ opens the Beatrice window: drag it by its grip, resize it from its corner. The sentence being read is pushed to its top edge, so the eyes stay put. The control pill has previous and next sentence, play and pause, speed minus and plus, font minus and plus, and X to end. Drag the pill anywhere. Space pauses, arrows skip, Escape ends, plus and minus change the font.</p>
+<p>READ opens the voice window: drag it by its grip, resize it from its corner. The sentence being read is pushed to its top edge, so the eyes stay put. The control pill has previous and next sentence, play and pause, speed minus and plus, font minus and plus, and X to end. Drag the pill anywhere. P pauses, arrows skip, Escape ends, plus and minus change the font.</p>
 <h2>SESSIONS</h2><div id="sessions"></div>
 </div></aside>
 <main id="main">
 <div id="hot"></div>
-<div id="top"><button id="tog" title="Side pane">%(icon)s</button><span class="t" id="title">MANTRA CHAT</span><span class="p" id="proj">waiting for a session</span><button id="pin" title="keep the bar">PIN</button><span id="dot" title="live"></span></div>
+<div id="top"><button id="tog" title="Side pane">%(icon)s</button><span class="t" id="title">MANTRA CHAT</span><span class="p" id="proj">waiting for a session</span><button id="auto" title="speak every answer as it arrives">AUTO VOICE</button><button id="vchip" title="how the sister talks; click to change">VOICE</button><button id="pin" title="keep the bar">PIN</button><span id="dot" title="live"></span></div>
 <div id="list"></div>
 <div id="tp"><div id="tpgrip"><span class="dots"></span><span class="who">BEATRICE</span><span class="cnt" id="tpcnt"></span></div><div id="tpbox"><div id="tpdoc"></div></div><div id="tpline"></div><div id="tpcorner"></div>
 <div id="tpstatus"></div></div>
 <div id="composer"><div id="grip" title="drag to resize"><i></i></div><div class="in"><textarea id="rt" placeholder="Your answer to Claude. Enter sends, Shift+Enter is a new line."></textarea>
-<div class="row"><button id="send">SEND TO CLAUDE</button><button id="rdraft" class="rd">READ</button><span id="rs"></span></div></div></div>
+<div class="row"><button id="talk" title="the space bar, too">TALK</button><span id="vu"><i></i></span><button id="cancel" title="Escape" hidden>✕</button><button id="send">SEND TO CLAUDE</button><button id="rdraft" class="rd">READ</button><span id="rs"></span></div></div></div>
 </main>
 <div id="pill"><span class="grip"></span><button id="pb" title="previous sentence">⏮</button><button id="pp" title="play / pause">▶</button><button id="pn" title="next sentence">⏭</button>
 <button id="psm" title="slower">−</button><span class="v" id="pspd">1×</span><button id="psp" title="faster">+</button>
