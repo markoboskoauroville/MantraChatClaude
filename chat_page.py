@@ -331,7 +331,7 @@ function hidePill(){ pill.classList.remove('on'); }
    moment sentence n starts to play, n+1 is asked for. A STOP aborts what is in
    flight and asks for nothing more. Each sentence is one clip and one cache
    file on the server, so nothing is made that is not about to be heard. */
-const WORD_LEAD = 0.02, HANDOFF_LEAD = 0.06;
+const WORD_LEAD = 0.02, HANDOFF_LEAD = 0.06, AHEAD = 3;
 class Reader {
   constructor(plan, msgEl, btn, st){
     this.n = plan.count; this.texts = plan.sents; this.mid = plan.id;
@@ -391,13 +391,17 @@ class Reader {
   /* play sentence i now, or wait for it, and ask for the one after */
   start(i){
     if (i >= this.n){ this.finish(); return; }
-    if (!this.clips[i]){ this.waiting = i; this.ensure(i); tpNote(i > 0 ? 'caching next sentence…' : 'asking ' + vlabel() + '…'); return; }
+    if (!this.clips[i]){ this.waiting = i; this.ahead(i); tpNote(i > 0 ? 'caching next sentence…' : 'asking ' + vlabel() + '…'); return; }
     tpNote(this.clips.filter(Boolean).length + ' / ' + this.n + ' cached'); document.getElementById('tpcnt').textContent = (i + 1) + ' / ' + this.n;
     this.ci = i; this.handed = false; this.lastSent = -1; this.lastWord = -2; this.scale = 1; this.clk.ready = false;
     this.a.src = this.clips[i].src; this.a.defaultPlaybackRate = SPEED; this.a.playbackRate = SPEED;
     this.a.play().then(() => { if (!this.raf) this.follow(); }).catch(() => { this.st.textContent = 'Press play on the pill, the browser blocked autoplay.'; if (!this.raf) this.follow(); });
-    this.ensure(i + 1);
+    this.ahead(i + 1);
   }
+  /* THREE SENTENCES AHEAD (Marko, 8.9.2026: "I have big gaps; generate three sentences in advance
+     so there is no gap"). A cloned voice takes longer to make a sentence than to say a short one,
+     so while sentence i plays, i+1, i+2 and i+3 are asked for; the server makes them in order. */
+  ahead(i){ for (let k = i; k < Math.min(this.n, i + AHEAD); k++) this.ensure(k); }
   next(){ this.start(this.ci + 1); }
   setSpeed(v){ this.a.defaultPlaybackRate = v; this.a.playbackRate = v; }
   clock(observed, rate, playing){
