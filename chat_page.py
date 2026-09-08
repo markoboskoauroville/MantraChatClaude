@@ -151,6 +151,10 @@ body.pinned #pin{color:var(--amber);border-color:var(--amber)}
 #voices{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
 #voices .b.on{background:var(--amber);color:#0b0d10;border-color:var(--amber)}
 #vst{font:12px/1.5 ui-monospace,Menlo,monospace;color:var(--dim);min-height:18px}
+/* reading in place: the card's body carries the sentences; a draft is read in a box where the entry box was */
+.msg .body .sent{cursor:pointer;line-height:1.6}
+#draftdoc{display:none;flex:1;min-height:40px;overflow:auto;background:#141a21;border:1px solid var(--amber);border-radius:12px;
+  padding:12px 14px;white-space:pre-wrap;line-height:1.6}
 """
 
 ICON = ('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round">'
@@ -167,7 +171,12 @@ const tp = document.getElementById('tp'), tpbox = document.getElementById('tpbox
 const tpstatus = document.getElementById('tpstatus');
 /* THE STATUS LINE. Quiet, small, bottom right of the Beatrice window. Never in the middle of
    the screen, never a fright: waiting and errors alike go here in the same small type. */
-function tpNote(msg, bad){ tpstatus.textContent = msg || ''; tpstatus.className = bad ? 'bad' : ''; }
+let noteEl = null;                      /* the small line under the card being read */
+function tpNote(msg, bad){
+  tpstatus.textContent = msg || ''; tpstatus.className = bad ? 'bad' : '';
+  if (noteEl){ noteEl.textContent = msg || ''; noteEl.className = (noteEl.id === 'rs' ? '' : 'st') + (bad ? ' bad' : ''); }
+}
+const draftdoc = document.getElementById('draftdoc');
 const pill = document.getElementById('pill'), pp = document.getElementById('pp'), pspd = document.getElementById('pspd'), pfont = document.getElementById('pfont');
 let lastId = 0, lastClaude = 0, SPEED = 1, FONT = 26, current = null, pending = null;
 const SPEEDS = [0.75, 1, 1.25, 1.5, 1.75, 2, 2.5];
@@ -264,6 +273,7 @@ function stepSpeed(d){
 function setFont(px){
   FONT = Math.max(14, Math.min(64, px)); try { localStorage.setItem('mantra.font', FONT); } catch(e){}
   document.documentElement.style.setProperty('--tpfont', FONT + 'px'); pfont.textContent = FONT;
+  if (current && current.doc) current.doc.style.fontSize = FONT + 'px';
   if (current) current.lastSent = -1;       /* re-anchor the sentence after the reflow */
 }
 document.getElementById('psm').onclick = () => stepSpeed(-1);
@@ -322,10 +332,18 @@ class Reader {
     this.lastSent = -1; this.lastWord = -2; this.handed = false; this.raf = null; this.dead = false;
     this.clk = {pred:0, lastWall:0, lastObs:-1, ready:false};
     this.a = document.createElement('audio'); this.a.preload = 'auto';
-    tpdoc.innerHTML = ''; tp.appendChild(this.a);
+    /* IN PLACE, ONE WINDOW (Marko, 8.9.2026: "I want to read, write and mark words from the chat
+       interface without additional helping window"). The words are lit in the card itself: its body
+       is swapped for the sentences while it is read and put back when the reading ends. A draft is
+       read in a box that takes the entry box's place. */
+    this.doc = msgEl.querySelector('.body');
+    this.draft = !this.doc;
+    if (this.draft){ this.doc = draftdoc; rt.style.display = 'none'; draftdoc.style.display = 'block'; }
+    this.orig = this.doc.innerHTML; this.doc.innerHTML = ''; this.doc.appendChild(this.a);
+    this.doc.style.fontSize = FONT + 'px';
     this.sents = this.texts.map((t, i) => {
       const el = document.createElement('span'); el.className = 'sent'; el.textContent = t + ' ';
-      el.onclick = () => this.jumpTo(i); tpdoc.appendChild(el); return el;
+      el.onclick = () => this.jumpTo(i); this.doc.appendChild(el); return el;
     });
     this.a.addEventListener('loadedmetadata', () => { const c = this.clips[this.ci]; if (c && c.prop && isFinite(this.a.duration)) this.scale = this.a.duration; });
     this.a.addEventListener('ended', () => { if (this.dead) return; if (!this.handed) this.next(); });
@@ -382,7 +400,15 @@ class Reader {
     if (k.pred < 0) k.pred = 0; return k.pred;
   }
   /* THE TELEPROMPTER RULE: the sentence being read sits at the top edge of the box, instantly. */
-  toTop(el){ if (Math.abs(el.offsetTop - tpbox.scrollTop - TOP_PAD) < 2) return; tpbox.scrollTop = el.offsetTop - TOP_PAD; }
+  /* THE TELEPROMPTER RULE, in the log itself: the sentence being read is brought to the top edge of the
+     log, instantly, never smoothly, unless the whole card already stands in view. A draft does not scroll. */
+  toTop(el){
+    if (this.draft) return;
+    const L = list.getBoundingClientRect(), r = el.getBoundingClientRect(), c = this.msgEl.getBoundingClientRect();
+    if (c.top >= L.top && c.bottom <= L.bottom) return;
+    if (Math.abs(r.top - L.top - TOP_PAD) < 2) return;
+    list.scrollTop += r.top - L.top - TOP_PAD;
+  }
   follow(){
     this.raf = null; if (this.dead) return;
     const row = this.rows[this.ci];
@@ -390,7 +416,7 @@ class Reader {
       const t = this.clock(this.a.currentTime||0, this.a.playbackRate, !this.a.paused) + WORD_LEAD;
       const key = this.ci * 2 + (this.a.paused ? 1 : 0);
       if (key !== this.lastSent){ this.lastSent = key;
-        tpdoc.querySelectorAll('.sent.active,.sent.paused').forEach(e => { e.classList.remove('active','paused'); e.classList.add('done'); });
+        this.doc.querySelectorAll('.sent.active,.sent.paused').forEach(e => { e.classList.remove('active','paused'); e.classList.add('done'); });
         row.el.classList.add(this.a.paused ? 'paused' : 'active'); this.toTop(row.el);
       }
       const sp = row.words;
@@ -420,24 +446,26 @@ class Reader {
   destroy(){ this.dead = true; this.ctls.forEach(c => { try { c.abort(); } catch(e){} });
     try { this.a.pause(); } catch(e){} this.a.removeAttribute('src'); this.a.remove();
     if (this.raf) cancelAnimationFrame(this.raf); this.raf = null;
+    this.doc.innerHTML = this.orig; this.doc.style.fontSize = '';           /* the card as it was */
+    if (this.draft){ draftdoc.style.display = 'none'; rt.style.display = ''; }
     this.btn.textContent = 'READ'; this.btn.classList.remove('on'); this.msgEl.classList.remove('reading'); }
 }
 function openTP(msgEl){
   document.querySelectorAll('.msg.reading').forEach(e => e.classList.remove('reading'));
-  msgEl.classList.add('reading'); tp.classList.add('on'); tpbox.scrollTop = 0;
+  msgEl.classList.add('reading');                  /* one window: no teleprompter, the card itself is read */
   document.documentElement.style.setProperty('--tpfont', FONT + 'px');
 }
 function endReading(){
   if (pending){ pending.abort(); pending = null; }
   if (current){ current.destroy(); current = null; }
-  tpdoc.innerHTML = ''; tpNote(''); tp.classList.remove('on'); hidePill();
+  tpNote(''); noteEl = null; tp.classList.remove('on'); hidePill();
   document.querySelectorAll('.msg.reading').forEach(e => e.classList.remove('reading'));
   document.querySelectorAll('.rd').forEach(b => { b.textContent = 'READ'; b.classList.remove('on'); });
 }
 function readPlan(url, payload, el, btn, st){
   if (current && current.msgEl === el){ current.toggle(); return; }
   endReading();
-  st.textContent = ''; st.className = st.id === 'rs' ? '' : 'st';
+  st.textContent = ''; st.className = st.id === 'rs' ? '' : 'st'; noteEl = st;
   openTP(el); showPill();
   tpNote('asking ' + vlabel() + '…'); btn.textContent = 'WAITING'; btn.classList.add('on');
   pending = new AbortController();
@@ -682,8 +710,8 @@ HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <div id="voices"></div>
 <div class="btns"><button class="b ghost" id="cloneme">CLONE MY VOICE · 15 SECONDS</button></div>
 <p id="vst"></p>
-<h2>TELEPROMPTER</h2>
-<p>READ opens the voice window: drag it by its grip, resize it from its corner. The sentence being read is pushed to its top edge, so the eyes stay put. The control pill has previous and next sentence, play and pause, speed minus and plus, font minus and plus, and X to end. Drag the pill anywhere. P pauses, arrows skip, Escape ends, plus and minus change the font.</p>
+<h2>READING</h2>
+<p>READ lights the words in the card itself, one window: the sentence being read yellow, the word red, the sentence brought to the top edge of the log so the eyes stay put. A click on a sentence jumps there. The control pill has previous and next sentence, play and pause, speed minus and plus, font minus and plus, and X to end. Drag the pill anywhere. P pauses, arrows skip, Escape ends, plus and minus change the font.</p>
 <h2>SESSIONS</h2><div id="sessions"></div>
 </div></aside>
 <main id="main">
@@ -692,7 +720,7 @@ HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <div id="list"></div>
 <div id="tp"><div id="tpgrip"><span class="dots"></span><span class="who">BEATRICE</span><span class="cnt" id="tpcnt"></span></div><div id="tpbox"><div id="tpdoc"></div></div><div id="tpline"></div><div id="tpcorner"></div>
 <div id="tpstatus"></div></div>
-<div id="composer"><div id="grip" title="drag to resize"><i></i></div><div class="in"><textarea id="rt" placeholder="Your answer to Claude. Enter sends, Shift+Enter is a new line."></textarea>
+<div id="composer"><div id="grip" title="drag to resize"><i></i></div><div class="in"><div id="draftdoc"></div><textarea id="rt" placeholder="Your answer to Claude. Enter sends, Shift+Enter is a new line."></textarea>
 <div class="row"><button id="talk" title="the space bar, too">TALK</button><span id="vu"><i></i></span><button id="cancel" title="Escape" hidden>✕</button><button id="send">SEND TO CLAUDE</button><button id="rdraft" class="rd">READ</button><span id="rs"></span></div></div></div>
 </main>
 <div id="pill"><span class="grip"></span><button id="pb" title="previous sentence">⏮</button><button id="pp" title="play / pause">▶</button><button id="pn" title="next sentence">⏭</button>
