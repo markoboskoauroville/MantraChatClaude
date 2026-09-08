@@ -98,15 +98,16 @@ body.pinned #pin{color:var(--amber);border-color:var(--amber)}
 /* THE CONTROLS SIT BESIDE READ (Marko, 8.9.2026: "while reading a card, next to the reading button,
    add all these controls: play, skip, speed, and font size"). The same pill, no longer floating: it
    is moved into the foot of the card being read, and shown only there. */
-#pill{display:none;align-items:center;gap:2px;background:#151a21;border:1px solid var(--slate);border-radius:999px;
-  padding:3px 6px;user-select:none}
+/* No frame (Marko, 8.9.2026: "just put buttons directly in the interface without this frame, and
+   maximize the buttons so I can see them"): bare buttons in the card's foot, large. */
+#pill{display:none;align-items:center;gap:6px;background:transparent;border:0;padding:0;user-select:none;flex-wrap:wrap}
 #pill.on{display:inline-flex}
-#pill button{background:transparent;color:var(--ink);border:1px solid transparent;border-radius:999px;width:30px;height:30px;
-  font:700 13px/1 ui-monospace,Menlo,monospace;cursor:pointer;display:flex;align-items:center;justify-content:center}
-#pill button:hover{border-color:var(--slate)}
-#pill #pp{background:var(--amber);color:#0b0d10;width:40px}
+#pill button{background:var(--slate);color:var(--ink);border:0;border-radius:10px;width:44px;height:38px;
+  font:700 17px/1 ui-monospace,Menlo,monospace;cursor:pointer;display:flex;align-items:center;justify-content:center}
+#pill button:hover{background:#2e3d4e}
+#pill #pp{background:var(--amber);color:#0b0d10;width:56px}
 #pill #px{color:#e23b4e}
-#pill .v{font:700 10.5px/1 ui-monospace,Menlo,monospace;color:var(--amber);min-width:30px;text-align:center}
+#pill .v{font:700 14px/1 ui-monospace,Menlo,monospace;color:var(--amber);min-width:44px;text-align:center}
 #pill .grip{display:none}
 /* THE COMPOSER IS A BAND WHOSE HEIGHT HE SETS. His request, 3.9.2026: "make possible to change
    size of the chat box so there is a chat like a log and there is entry box. I want to be able
