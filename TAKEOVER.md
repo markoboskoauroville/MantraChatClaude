@@ -67,7 +67,7 @@ the greeting instructions. Then `curl http://127.0.0.1:8825/health` should answe
 ~/.tspeak/ring.json             key ring state, fingerprints only
 ~/.tspeak/speed.txt             last reading speed of the R command
 ~/.tspeak/chat/messages.jsonl   every card, one JSON per line
-~/.tspeak/chat/audio/<id>/      plan.json and one <n>.json per sentence, cached audio
+~/.tspeak/chat/audio/<id>/      plan.json and one <n>.json per sentence, cached audio, swept after a day
 ~/.tspeak/inbox/<stamp>.json    what Marko sent from a page; the session watches this folder
 ~/.tspeak/out/<stamp>.html      pages made by the R command
 ~/.tspeak/chatd.log             the server log

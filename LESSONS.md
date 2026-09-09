@@ -91,5 +91,10 @@ What one day of building this taught, 2.9.2026. Each one cost something; none sh
   "as you read one sentence, delete that cache"). The page reports /at/<i>; the server moves its
   cursor there, drops background jobs behind it, queues i to the end. The voice's own store keeps
   the mp3 and its timing, so READ AGAIN is quick without the sister holding anything.
+- Old cache goes before new cache comes (Marko, 9.9.2026: "check for the stalled or old cache ...
+  before caching new it needs to delete old"). `sweep_cache` runs at the start of every reading
+  and before a card is queued on arrival: a card folder whose newest file is older than a day is
+  removed, so are the whole-message clips of the first design; the card being read is never
+  touched. Without it the audio folder grew a folder per card forever, 22 MB in a week.
 - A sentence asked for twice while it sits between the two stages was made twice, Whisper and
   all. An in-flight set drops the second entry; the first one's event serves both.

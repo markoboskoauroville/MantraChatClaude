@@ -46,6 +46,8 @@ READ is progressive. `POST /api/read/<id>/plan` returns the sentences. `POST
 `~/.tspeak/chat/audio/<id>/`. The page plays sentence 0 as soon as it arrives and asks for
 n+1 the moment n starts playing. STOP aborts what is in flight and asks for nothing more.
 `POST /api/read/draft/plan` does the same for text not yet sent, keyed by a hash of the text.
+Before a card is cached, at the plan and when the card arrives, `sweep_cache` deletes every
+cache entry under `~/.tspeak/chat/audio/` untouched for a day, except the card being read.
 
 ## Rules that shaped it
 

@@ -37,8 +37,10 @@ import os
 import queue
 import socket
 import subprocess
+import shutil
 import sys
 import threading
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -113,6 +115,7 @@ def append(role, text, **meta):
             q.put(rec)
     if role == 'claude':
         try:
+            sweep_cache(keep=mid)             # old cache goes before the new card is cached
             queue_card(mid)                   # the cloned voice starts on it before READ is pressed
         except Exception as e:                # noqa: BLE001
             log('queue_card %d: %s' % (mid, e))
@@ -374,6 +377,7 @@ def read_draft_plan():
     if not text:
         return jsonify({'ok': False, 'error': 'nothing to read'}), 400
     pid = 'd' + hashlib.sha1(text.encode('utf-8')).hexdigest()[:12]
+    sweep_cache(keep=pid)                     # old cache goes before this draft's is made
     plan = PLANS.get(pid) or read_plan(pid) or make_plan(pid, text)
     if not plan['count']:
         return jsonify({'ok': False, 'error': 'nothing to read'}), 400
@@ -385,6 +389,7 @@ def read_plan_route(mid):
     mid = str(mid)
     if request.method == 'OPTIONS':
         return ('', 204)
+    sweep_cache(keep=mid)                     # old cache goes before this card's is made
     plan = read_plan(mid)
     if plan is None:
         return jsonify({'ok': False, 'error': 'no such message'}), 404
@@ -510,6 +515,51 @@ def forget(mid, n):
             os.remove(sentence_cache(mid, n, w))
         except OSError:
             pass
+
+
+STALE = 24 * 3600      # a cache entry untouched this long is old
+
+
+def sweep_cache(keep=None):
+    """OLD CACHE GOES BEFORE NEW CACHE COMES (Marko, 9.9.2026: "when you start reading the chat
+    it needs to check for the stalled or old cache. If there is something not recent and it's
+    there in the cache, before caching new it needs to delete old"). Called at the start of every
+    reading and before a card is queued: every card folder under AUDIO whose newest file is
+    older than STALE is removed, so are the whole-message <id>.json clips of the first design,
+    which nothing reads any more. The card being read (`keep`) is never touched, whatever its
+    age. Returns how many entries went."""
+    if not os.path.isdir(AUDIO):
+        return 0
+    now = time.time()
+    keep = None if keep is None else str(keep)
+    gone = 0
+    for name in os.listdir(AUDIO):
+        path = os.path.join(AUDIO, name)
+        if name == keep or name == '%s.json' % keep:
+            continue
+        try:
+            if os.path.isdir(path):
+                newest = max([os.path.getmtime(os.path.join(path, f)) for f in os.listdir(path)]
+                             or [os.path.getmtime(path)])
+                if now - newest < STALE:
+                    continue
+                shutil.rmtree(path, ignore_errors=True)
+            elif name.endswith('.json'):              # a whole-message clip, the first design
+                os.remove(path)
+            else:
+                continue
+        except OSError:
+            continue
+        gone += 1
+        PLANS.pop(name, None)
+        CURSOR.pop(name, None)
+        with JOB_LOCK:
+            for key in [k for k in JOB_DONE if k[0] == name]:
+                JOB_DONE.pop(key, None)
+                JOB_RESULT.pop(key, None)
+    if gone:
+        log('sweep: %d old cache entr%s removed' % (gone, 'y' if gone == 1 else 'ies'))
+    return gone
 
 
 def queue_card(mid, start=None):
