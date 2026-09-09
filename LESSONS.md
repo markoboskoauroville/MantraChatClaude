@@ -81,8 +81,15 @@ What one day of building this taught, 2.9.2026. Each one cost something; none sh
   is <stamp>.in.<ext>, the output <stamp>.wav.
 - A lock is not a queue. Three sentence requests racing for SYNTH_LOCK were made in whatever order
   the threads won it, so sentence 2 often came before sentence 0 and the first word waited for all
-  three. One worker thread and a PriorityQueue keyed (priority, sentence number) make them first to
-  last; the page waits for three before the first word and keeps three ahead (Marko, 9.9.2026).
-- The cloned voice costs five to nine seconds a sentence whatever its length (about 2.5 s fixed in
-  the clone, then Whisper listening to the clip for the word timing), slower than speech. So the
-  worker starts on every Claude card as it arrives, before READ; only the clone, Beatrice is billed.
+  three. One PriorityQueue keyed (priority, sentence number) makes them first to last; the page
+  waits for three before the first word and keeps three requests in flight (Marko, 9.9.2026).
+- The cloned voice cost five to nine seconds a sentence whatever its length: about 2.5 s fixed in
+  the clone, then Whisper listening to the clip for the word timing. Run as two stages in a
+  pipeline (the clone on n+1 while the ears time n) it is about 3.5 s a sentence, near speech. The
+  card is queued the moment it arrives, before READ; only the clone, Beatrice is billed.
+- The cache runs from the sentence playing to the end and the sentence heard is deleted (Marko:
+  "as you read one sentence, delete that cache"). The page reports /at/<i>; the server moves its
+  cursor there, drops background jobs behind it, queues i to the end. The voice's own store keeps
+  the mp3 and its timing, so READ AGAIN is quick without the sister holding anything.
+- A sentence asked for twice while it sits between the two stages was made twice, Whisper and
+  all. An in-flight set drops the second entry; the first one's event serves both.

@@ -142,10 +142,10 @@ def hear(wav):
     return ' '.join((r.get('text') or '').split()), time.time() - t0
 
 
-def clone_clip(text, voice=None):
-    """(mp3 bytes, tokens) for one sentence in a cloned voice. The mp3 comes
-    from clone.py's cache (made once per voice and model); the words are timed
-    by the ears listening to the clip again (timing.py). Raises RuntimeError."""
+def clone_audio(text, voice=None):
+    """Stage one of a cloned sentence: (mp3 path, tokens or None). The mp3
+    comes from clone.py's cache (made once per voice and model); the tokens
+    come back only if the clip was timed before. Raises RuntimeError."""
     if not AVAILABLE:
         raise RuntimeError(_err)
     text = ' '.join(text.split())
@@ -166,19 +166,35 @@ def clone_clip(text, voice=None):
                 tokens = json.load(fh).get('tokens')
         except (OSError, ValueError):
             tokens = None
-    if not tokens:
+    return path, tokens or None
+
+
+def clone_tokens(path, text):
+    """Stage two: the words timed by the ears listening to the clip again
+    (timing.py), kept beside the mp3. [] when the timing fails."""
+    text = ' '.join(text.split())
+    try:
+        tokens = _timing.timings(path, text)
+    except Exception as e:                                  # noqa: BLE001
+        _log('timing failed, proportional words: %s' % str(e)[:100])
+        return []
+    if tokens:
         try:
-            tokens = _timing.timings(path, text)
-        except Exception as e:                              # noqa: BLE001
-            tokens = None
-            _log('timing failed, proportional words: %s' % str(e)[:100])
-        if tokens:
-            try:
-                import json
-                with open(tj, 'w') as fh:
-                    json.dump({'text': text, 'tokens': tokens}, fh)
-            except OSError:
-                pass
+            import json
+            with open(path[:-4] + '.json', 'w') as fh:
+                json.dump({'text': text, 'tokens': tokens}, fh)
+        except OSError:
+            pass
+    return tokens or []
+
+
+def clone_clip(text, voice=None):
+    """(mp3 bytes, tokens) for one sentence in a cloned voice: both stages in
+    a row. The sister's worker runs them as a pipeline instead (chatd.py), so
+    the clone makes sentence n+1 while the ears time sentence n."""
+    path, tokens = clone_audio(text, voice)
+    if not tokens:
+        tokens = clone_tokens(path, text)
     with open(path, 'rb') as fh:
         audio = fh.read()
     return audio, tokens or []

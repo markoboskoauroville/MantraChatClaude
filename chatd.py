@@ -394,19 +394,33 @@ def read_plan_route(mid):
     return jsonify(dict(plan, ok=True, who=who()))
 
 
-# ONE WORKER, IN ORDER (Marko, 9.9.2026: "There is a big delay between sentences. I want you to
-# catch the first three sentences, and then while they are playing you always cache the fourth").
-# Before this, three requests raced for SYNTH_LOCK and the lock is not a queue: sentence 2 was
-# often made before sentence 0, and the first word waited for all three. Now every sentence is a
-# job for one worker thread, ordered by (priority, sentence number): what the page is waiting for
-# comes first (priority 0), the rest of the card follows (priority 1). A cloned voice is local and
-# free, so the whole card is queued the moment it arrives from the session, before READ is
-# pressed; Beatrice costs per character, so she is only made for what the page asks.
+# THE CACHE RUNS FROM THE SENTENCE PLAYING TO THE END (Marko, 9.9.2026: "start to cache all the
+# sentences while playing. Work in the background until the end of the text. But as you read one
+# sentence, delete that cache. When we come to the end, we have cache deleted." And: "if I jump to
+# the middle of the page, then you cache until the end.")
+#
+# Every sentence is a job for one queue keyed (priority, sentence number): what the page waits for
+# goes first (priority 0), the rest of the card follows in order (priority 1). A lock is not a
+# queue: before this, three requests raced for SYNTH_LOCK and sentence 2 was often made before
+# sentence 0. The page says where it is (/at/<i>): the cursor moves there, everything from i to the
+# end is queued, and background jobs behind the cursor are dropped, so a jump caches from the
+# jump onward. A sentence heard is deleted from this cache; the voice's own store keeps the mp3
+# and its timing, so READ AGAIN is quick without the sister holding anything.
+#
+# Two stages, a pipeline: the clone makes sentence n+1 while the ears time sentence n. In a row
+# they cost five to nine seconds a sentence, slower than speech; overlapped, about the clone's
+# time alone. The cloned voice is local and free, so a card is queued the moment it arrives from
+# the session, before READ is pressed; Beatrice costs per character, so she is made only for what
+# the page asks and her clips are never deleted.
 JOBS = queue.PriorityQueue()
+TIMING = queue.Queue()
 JOB_LOCK = threading.Lock()
+TIME_LOCK = threading.Lock()
 JOB_SEQ = [0]
-JOB_DONE = {}          # (mid, n) -> threading.Event, set when the sentence is made or failed
-JOB_RESULT = {}        # (mid, n) -> (data, http status)
+JOB_DONE = {}          # (mid, n) -> threading.Event: queued, then set when made or failed
+JOB_RESULT = {}        # (mid, n) -> (data, http status), taken by the request that waited
+CURSOR = {}            # mid -> the sentence playing; background jobs before it are dropped
+IN_FLIGHT = set()      # keys between the two stages; a second entry for one of them is dropped
 
 
 def sentence_cache(mid, n, w):
@@ -428,39 +442,19 @@ def cached_sentence(mid, n, w):
     return None
 
 
-def make_sentence(mid, n, w, text):
-    """Make one sentence in the current voice and write its cache file.
-    Returns (data, http status)."""
-    cache = sentence_cache(mid, n, w)
-    if w['engine'] == 'clone':
-        try:
-            with SYNTH_LOCK:
-                audio, tokens = V.clone_clip(text, w['voice'])
-        except RuntimeError as e:
-            log('read %s/%d (%s) failed: %s' % (mid, n, w['voice'], e))
-            return {'ok': False, 'error': str(e)}, 502
-        from speechify import proportional_tokens
-        prop = not tokens
-        if prop:
-            tokens = proportional_tokens(text)
-        billed, label, masked = 0, w['label'], ''
-    else:
-        with SYNTH_LOCK:
-            ring = Ring()
-            if not ring.keys:
-                return {'ok': False, 'error': 'no Speechify keys in ' + ring.keyfile}, 503
-            if not ring.usable():
-                return {'ok': False, 'error': 'every Speechify key is dead or cooling'}, 503
-            try:
-                audio, tokens, billed, prop = synth(ring, text)
-            except RuntimeError as e:
-                log('read %s/%d failed: %s' % (mid, n, e))
-                return {'ok': False, 'error': str(e)}, 502
-            label, masked = ring.active()
+def made_ahead(mid, i, w):
+    plan = read_plan(mid)
+    if not plan:
+        return 0
+    return sum(1 for n in range(i + 1, plan['count']) if os.path.isfile(sentence_cache(mid, n, w)))
+
+
+def store_clip(mid, n, w, text, audio, tokens, prop, billed, label, masked=''):
     clip = {'src': 'data:audio/mpeg;base64,' + base64.b64encode(audio).decode('ascii'),
             'prop': prop, 'text': text, 'words': tokens,
             'dur': (tokens[-1]['d'] if tokens and not prop else 0)}
     data = {'ok': True, 'id': mid, 'n': n, 'clip': clip, 'billed': billed, 'key': label, 'cached': False}
+    cache = sentence_cache(mid, n, w)
     os.makedirs(os.path.dirname(cache), exist_ok=True)
     with open(cache, 'w', encoding='utf-8') as fh:
         json.dump(data, fh)
@@ -468,63 +462,152 @@ def make_sentence(mid, n, w, text):
         log('read %s/%d: %d chars in %s' % (mid, n, len(text), label))
     else:
         log('read %s/%d: %d chars on %s %s' % (mid, n, billed, label, masked))
-    return data, 200
+    return data
+
+
+def beatrice_sentence(mid, n, w, text):
+    """One sentence by Speechify, both stages in one call. (data, http status)."""
+    with SYNTH_LOCK:
+        ring = Ring()
+        if not ring.keys:
+            return {'ok': False, 'error': 'no Speechify keys in ' + ring.keyfile}, 503
+        if not ring.usable():
+            return {'ok': False, 'error': 'every Speechify key is dead or cooling'}, 503
+        try:
+            audio, tokens, billed, prop = synth(ring, text)
+        except RuntimeError as e:
+            log('read %s/%d failed: %s' % (mid, n, e))
+            return {'ok': False, 'error': str(e)}, 502
+        label, masked = ring.active()
+    return store_clip(mid, n, w, text, audio, tokens, prop, billed, label, masked), 200
 
 
 def enqueue(mid, n, prio):
-    """Queue sentence n of plan mid; a job already waiting is only promoted."""
+    """Queue sentence n of plan mid; a job already queued or made is left alone."""
     key = (str(mid), n)
     with JOB_LOCK:
         ev = JOB_DONE.get(key)
         if ev is None:
             ev = JOB_DONE[key] = threading.Event()
-        elif ev.is_set():
+        elif ev.is_set() or prio > 0:
             return ev
         JOB_SEQ[0] += 1
         JOBS.put((prio, n, JOB_SEQ[0], key))
     return ev
 
 
-def queue_card(mid):
-    """The whole card, in order, behind whatever the page is waiting for. Only
-    for the cloned voice: local and free."""
+def forget(mid, n):
+    """Drop what the sister holds for a sentence: its cache file (a clone's only;
+    Beatrice's cost money), its event and its result. Asked for again, it is
+    remade from the voice's own store in a moment."""
+    key = (str(mid), n)
+    with JOB_LOCK:
+        JOB_DONE.pop(key, None)
+        JOB_RESULT.pop(key, None)
+    w = who()
+    if w['engine'] == 'clone':
+        try:
+            os.remove(sentence_cache(mid, n, w))
+        except OSError:
+            pass
+
+
+def queue_card(mid, start=None):
+    """The card from `start` (or its cursor) to the end, in order, behind whatever
+    the page is waiting for. Only for the cloned voice: local and free."""
     if who()['engine'] != 'clone':
         return
     plan = read_plan(mid)
     if not plan:
         return
-    for n in range(plan['count']):
+    mid = str(mid)
+    if start is None:
+        start = CURSOR.get(mid, 0)
+    for n in range(start, plan['count']):
         enqueue(mid, n, 1)
 
 
-def worker():
+def finish_job(key, data, status):
+    with JOB_LOCK:
+        JOB_RESULT[key] = (data, status)
+        ev = JOB_DONE.get(key)
+        if status != 200:
+            JOB_DONE.pop(key, None)         # so the next request tries again
+    if ev:
+        ev.set()
+
+
+def stage_one():
+    """The clone (or Beatrice) makes the audio, in order."""
     while True:
         prio, n, _seq, key = JOBS.get()
         mid, n = key
-        ev = JOB_DONE.get(key)
         try:
+            if prio > 0 and n < CURSOR.get(mid, 0):
+                with JOB_LOCK:                              # behind the reader: made only if asked for
+                    if not JOB_DONE.get(key, threading.Event()).is_set():
+                        JOB_DONE.pop(key, None)
+                continue
+            with JOB_LOCK:
+                if key in IN_FLIGHT:                       # asked for again while the ears time it
+                    continue
             w = who()
             data = cached_sentence(mid, n, w)
-            if data is None:
-                plan = read_plan(mid)
-                if plan is None or n >= plan['count']:
-                    data, status = {'ok': False, 'error': 'no such sentence'}, 404
-                else:
-                    data, status = make_sentence(mid, n, w, plan['sents'][n])
+            if data is not None:
+                finish_job(key, data, 200)
+                continue
+            plan = read_plan(mid)
+            if plan is None or n >= plan['count']:
+                finish_job(key, {'ok': False, 'error': 'no such sentence'}, 404)
+                continue
+            text = plan['sents'][n]
+            if w['engine'] == 'clone':
+                with JOB_LOCK:
+                    IN_FLIGHT.add(key)
+                with SYNTH_LOCK:
+                    path, tokens = V.clone_audio(text, w['voice'])
+                TIMING.put((key, w, text, path, tokens))
             else:
-                status = 200
+                data, status = beatrice_sentence(mid, n, w, text)
+                finish_job(key, data, status)
+        except RuntimeError as e:
+            log('read %s/%d failed: %s' % (mid, n, e))
+            with JOB_LOCK:
+                IN_FLIGHT.discard(key)
+            finish_job(key, {'ok': False, 'error': str(e)}, 502)
         except Exception as e:                                  # noqa: BLE001
-            log('worker %s/%d: %s' % (mid, n, e))
-            data, status = {'ok': False, 'error': str(e)}, 502
-        with JOB_LOCK:
-            JOB_RESULT[key] = (data, status)
-            if status != 200:
-                JOB_DONE.pop(key, None)         # so the next request tries again
-        if ev:
-            ev.set()
+            log('stage one %s/%d: %s' % (mid, n, e))
+            with JOB_LOCK:
+                IN_FLIGHT.discard(key)
+            finish_job(key, {'ok': False, 'error': str(e)}, 502)
 
 
-threading.Thread(target=worker, name='sentences', daemon=True).start()
+def stage_two():
+    """The ears time the clip while the clone is already on the next one."""
+    while True:
+        key, w, text, path, tokens = TIMING.get()
+        mid, n = key
+        try:
+            if not tokens:
+                with TIME_LOCK:
+                    tokens = V.clone_tokens(path, text)
+            from speechify import proportional_tokens
+            prop = not tokens
+            if prop:
+                tokens = proportional_tokens(text)
+            with open(path, 'rb') as fh:
+                audio = fh.read()
+            finish_job(key, store_clip(mid, n, w, text, audio, tokens, prop, 0, w['label']), 200)
+        except Exception as e:                                  # noqa: BLE001
+            log('stage two %s/%d: %s' % (mid, n, e))
+            finish_job(key, {'ok': False, 'error': str(e)}, 502)
+        finally:
+            with JOB_LOCK:
+                IN_FLIGHT.discard(key)
+
+
+threading.Thread(target=stage_one, name='clone', daemon=True).start()
+threading.Thread(target=stage_two, name='timing', daemon=True).start()
 
 
 @app.route('/api/read/<mid>/sent/<int:n>', methods=['POST', 'OPTIONS'])
@@ -535,14 +618,41 @@ def read_sentence(mid, n):
     plan = read_plan(mid)
     if plan is None or n < 0 or n >= plan['count']:
         return jsonify({'ok': False, 'error': 'no such sentence'}), 404
-    data = cached_sentence(mid, n, who())
-    if data is not None:
-        return jsonify(data)
-    ev = enqueue(mid, n, 0)
-    if not ev.wait(600):
-        return jsonify({'ok': False, 'error': 'the voice took too long'}), 504
-    data, status = JOB_RESULT.get((mid, n), ({'ok': False, 'error': 'lost'}, 502))
-    return jsonify(data), status
+    w = who()
+    data = cached_sentence(mid, n, w)
+    if data is None:
+        ev = enqueue(mid, n, 0)
+        if not ev.wait(600):
+            return jsonify({'ok': False, 'error': 'the voice took too long'}), 504
+        with JOB_LOCK:
+            got = JOB_RESULT.pop((mid, n), None)
+        if got is None:
+            data = cached_sentence(mid, n, w)
+            if data is None:
+                return jsonify({'ok': False, 'error': 'the sentence was lost'}), 502
+        else:
+            data, status = got
+            if status != 200:
+                return jsonify(data), status
+    data['made'] = made_ahead(mid, n, w)
+    return jsonify(data)
+
+
+@app.route('/api/read/<mid>/at/<int:i>', methods=['POST', 'OPTIONS'])
+def read_at(mid, i):
+    """The page is at sentence i: cache from here to the end, drop what was heard."""
+    mid = str(mid)
+    if request.method == 'OPTIONS':
+        return ('', 204)
+    plan = read_plan(mid)
+    if plan is None or i < 0 or i >= plan['count']:
+        return jsonify({'ok': False, 'error': 'no such sentence'}), 404
+    CURSOR[mid] = i
+    for k in body().get('heard') or []:
+        if isinstance(k, int) and 0 <= k < plan['count']:
+            forget(mid, k)
+    queue_card(mid, i)
+    return jsonify({'ok': True, 'at': i, 'made': made_ahead(mid, i, who()), 'count': plan['count']})
 
 
 # -------------------------------------------------------- the ears, the voice
