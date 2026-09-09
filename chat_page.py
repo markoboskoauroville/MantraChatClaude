@@ -326,11 +326,14 @@ function showPill(btn){ if (btn) btn.insertAdjacentElement('afterend', pill); pi
 function hidePill(){ pill.classList.remove('on'); }
 
 /* ---------------------------------------------------------- the reader */
-/* ONE SENTENCE AT A TIME. The plan gives every sentence at once, so the whole
-   text stands in the teleprompter immediately. Sentence 0 is asked for; the
-   moment sentence n starts to play, n+1 is asked for. A STOP aborts what is in
-   flight and asks for nothing more. Each sentence is one clip and one cache
-   file on the server, so nothing is made that is not about to be heard. */
+/* THREE IN THE CACHE (Marko, 9.9.2026: "catch the first three sentences, and then while they are
+   playing you always cache the fourth ... as one is playing then you delete that one which was
+   finished, so we always have three in the cache"). The plan gives every sentence at once, so the
+   whole text stands in the card immediately. Nothing plays until the first three clips are here;
+   from then on, the moment sentence i starts, i+1, i+2 and i+3 are asked for, and every clip
+   before i is let go (the server keeps its file, so a jump back costs one quick fetch). The server
+   makes them first to last, one worker, and starts on a card as soon as it arrives. A STOP aborts
+   what is in flight and asks for nothing more. */
 const WORD_LEAD = 0.02, HANDOFF_LEAD = 0.06, AHEAD = 3;
 class Reader {
   constructor(plan, msgEl, btn, st){
@@ -338,7 +341,7 @@ class Reader {
     this.msgEl = msgEl; this.btn = btn; this.st = st;
     this.clips = new Array(this.n).fill(null); this.rows = new Array(this.n).fill(null);
     this.inflight = {}; this.ctls = []; this.ci = -1; this.waiting = -1; this.scale = 1;
-    this.lastSent = -1; this.lastWord = -2; this.handed = false; this.raf = null; this.dead = false;
+    this.lastSent = -1; this.lastWord = -2; this.handed = false; this.raf = null; this.dead = false; this.primed = false;
     this.clk = {pred:0, lastWall:0, lastObs:-1, ready:false};
     this.a = document.createElement('audio'); this.a.preload = 'auto';
     /* IN PLACE, ONE WINDOW (Marko, 8.9.2026: "I want to read, write and mark words from the chat
@@ -383,24 +386,32 @@ class Reader {
         this.clips[i] = j.clip; this.fill(i);
         if (!j.cached) this.spent = (this.spent || 0) + (j.billed || 0);
         this.st.textContent = (this.spent ? this.spent + ' characters' : 'from cache') + ' · ' + (i + 1) + '/' + this.n + ' ready';
-        const made = this.clips.filter(Boolean).length; if (this.waiting !== i) tpNote(made + ' / ' + this.n + ' cached');
-        if (this.waiting === i){ this.waiting = -1; this.start(i); }
+        if (this.waiting < 0 && this.ci >= 0) tpNote(this.have(this.ci + 1) + ' ahead · ' + (this.ci + 1) + ' / ' + this.n);
+        if (this.waiting >= 0 && this.ready(this.waiting)){ const w = this.waiting; this.waiting = -1; this.start(w); }
+        else if (this.waiting >= 0) tpNote(this.have(this.waiting) + ' / ' + Math.min(AHEAD, this.n - this.waiting) + ' cached…');
       }).catch(err => { if (this.dead || (err && err.name === 'AbortError')) return; delete this.inflight[i];
         this.st.textContent = 'Server not reachable'; this.st.className = 'st bad'; tpNote('server not reachable', true); if (this.waiting === i) this.waiting = -1; });
   }
-  /* play sentence i now, or wait for it, and ask for the one after */
+  /* how many of sentences i, i+1, i+2 are here */
+  have(i){ let c = 0; for (let k = i; k < Math.min(this.n, i + AHEAD); k++) if (this.clips[k]) c++; return c; }
+  /* the first start waits for three (or all that remain); after that one sentence is enough,
+     so a drained cache gives short gaps rather than one long one */
+  ready(i){ return this.primed ? !!this.clips[i] : this.have(i) >= Math.min(AHEAD, this.n - i); }
+  /* play sentence i now, or wait for it, and ask for the three after */
   start(i){
     if (i >= this.n){ this.finish(); return; }
-    if (!this.clips[i]){ this.waiting = i; this.ahead(i); tpNote(i > 0 ? 'caching next sentence…' : 'asking ' + vlabel() + '…'); return; }
-    tpNote(this.clips.filter(Boolean).length + ' / ' + this.n + ' cached'); document.getElementById('tpcnt').textContent = (i + 1) + ' / ' + this.n;
+    if (!this.ready(i)){ this.waiting = i; this.ahead(i); tpNote(this.primed ? 'caching next sentence…' : 'asking ' + vlabel() + ' for three sentences…'); return; }
+    this.primed = true;
+    for (let k = 0; k < i; k++) this.clips[k] = null;                 /* the finished ones are let go */
+    tpNote(this.have(i + 1) + ' ahead · ' + (i + 1) + ' / ' + this.n); document.getElementById('tpcnt').textContent = (i + 1) + ' / ' + this.n;
     this.ci = i; this.handed = false; this.lastSent = -1; this.lastWord = -2; this.scale = 1; this.clk.ready = false;
     this.a.src = this.clips[i].src; this.a.defaultPlaybackRate = SPEED; this.a.playbackRate = SPEED;
     this.a.play().then(() => { if (!this.raf) this.follow(); }).catch(() => { this.st.textContent = 'Press play on the pill, the browser blocked autoplay.'; if (!this.raf) this.follow(); });
     this.ahead(i + 1);
   }
   /* THREE SENTENCES AHEAD (Marko, 8.9.2026: "I have big gaps; generate three sentences in advance
-     so there is no gap"). A cloned voice takes longer to make a sentence than to say a short one,
-     so while sentence i plays, i+1, i+2 and i+3 are asked for; the server makes them in order. */
+     so there is no gap"; 9.9.2026, the rule above). While sentence i plays, i+1, i+2 and i+3 are
+     asked for; the server makes them first to last. */
   ahead(i){ for (let k = i; k < Math.min(this.n, i + AHEAD); k++) this.ensure(k); }
   next(){ this.start(this.ci + 1); }
   setSpeed(v){ this.a.defaultPlaybackRate = v; this.a.playbackRate = v; }

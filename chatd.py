@@ -111,6 +111,11 @@ def append(role, text, **meta):
             fh.write(json.dumps(rec, ensure_ascii=False) + '\n')
         for q in list(SUBS):
             q.put(rec)
+    if role == 'claude':
+        try:
+            queue_card(mid)                   # the cloned voice starts on it before READ is pressed
+        except Exception as e:                # noqa: BLE001
+            log('queue_card %d: %s' % (mid, e))
     return rec
 
 
@@ -385,7 +390,141 @@ def read_plan_route(mid):
         return jsonify({'ok': False, 'error': 'no such message'}), 404
     if not plan['count']:
         return jsonify({'ok': False, 'error': 'nothing to read'}), 400
+    queue_card(mid)
     return jsonify(dict(plan, ok=True, who=who()))
+
+
+# ONE WORKER, IN ORDER (Marko, 9.9.2026: "There is a big delay between sentences. I want you to
+# catch the first three sentences, and then while they are playing you always cache the fourth").
+# Before this, three requests raced for SYNTH_LOCK and the lock is not a queue: sentence 2 was
+# often made before sentence 0, and the first word waited for all three. Now every sentence is a
+# job for one worker thread, ordered by (priority, sentence number): what the page is waiting for
+# comes first (priority 0), the rest of the card follows (priority 1). A cloned voice is local and
+# free, so the whole card is queued the moment it arrives from the session, before READ is
+# pressed; Beatrice costs per character, so she is only made for what the page asks.
+JOBS = queue.PriorityQueue()
+JOB_LOCK = threading.Lock()
+JOB_SEQ = [0]
+JOB_DONE = {}          # (mid, n) -> threading.Event, set when the sentence is made or failed
+JOB_RESULT = {}        # (mid, n) -> (data, http status)
+
+
+def sentence_cache(mid, n, w):
+    if w['engine'] == 'clone':
+        # THE CLONED VOICE: local, free, cached per voice and model (voice.py). The
+        # sister's cache file is named after the voice so Beatrice's clips and a
+        # clone's never mix, and switching voices re-reads nothing already made.
+        return os.path.join(AUDIO, mid, '%d.%s-%s.json' % (n, w['voice'], w['model']))
+    return os.path.join(AUDIO, mid, '%d.json' % n)
+
+
+def cached_sentence(mid, n, w):
+    cache = sentence_cache(mid, n, w)
+    if os.path.isfile(cache):
+        with open(cache, encoding='utf-8') as fh:
+            data = json.load(fh)
+        data['cached'] = True
+        return data
+    return None
+
+
+def make_sentence(mid, n, w, text):
+    """Make one sentence in the current voice and write its cache file.
+    Returns (data, http status)."""
+    cache = sentence_cache(mid, n, w)
+    if w['engine'] == 'clone':
+        try:
+            with SYNTH_LOCK:
+                audio, tokens = V.clone_clip(text, w['voice'])
+        except RuntimeError as e:
+            log('read %s/%d (%s) failed: %s' % (mid, n, w['voice'], e))
+            return {'ok': False, 'error': str(e)}, 502
+        from speechify import proportional_tokens
+        prop = not tokens
+        if prop:
+            tokens = proportional_tokens(text)
+        billed, label, masked = 0, w['label'], ''
+    else:
+        with SYNTH_LOCK:
+            ring = Ring()
+            if not ring.keys:
+                return {'ok': False, 'error': 'no Speechify keys in ' + ring.keyfile}, 503
+            if not ring.usable():
+                return {'ok': False, 'error': 'every Speechify key is dead or cooling'}, 503
+            try:
+                audio, tokens, billed, prop = synth(ring, text)
+            except RuntimeError as e:
+                log('read %s/%d failed: %s' % (mid, n, e))
+                return {'ok': False, 'error': str(e)}, 502
+            label, masked = ring.active()
+    clip = {'src': 'data:audio/mpeg;base64,' + base64.b64encode(audio).decode('ascii'),
+            'prop': prop, 'text': text, 'words': tokens,
+            'dur': (tokens[-1]['d'] if tokens and not prop else 0)}
+    data = {'ok': True, 'id': mid, 'n': n, 'clip': clip, 'billed': billed, 'key': label, 'cached': False}
+    os.makedirs(os.path.dirname(cache), exist_ok=True)
+    with open(cache, 'w', encoding='utf-8') as fh:
+        json.dump(data, fh)
+    if w['engine'] == 'clone':
+        log('read %s/%d: %d chars in %s' % (mid, n, len(text), label))
+    else:
+        log('read %s/%d: %d chars on %s %s' % (mid, n, billed, label, masked))
+    return data, 200
+
+
+def enqueue(mid, n, prio):
+    """Queue sentence n of plan mid; a job already waiting is only promoted."""
+    key = (str(mid), n)
+    with JOB_LOCK:
+        ev = JOB_DONE.get(key)
+        if ev is None:
+            ev = JOB_DONE[key] = threading.Event()
+        elif ev.is_set():
+            return ev
+        JOB_SEQ[0] += 1
+        JOBS.put((prio, n, JOB_SEQ[0], key))
+    return ev
+
+
+def queue_card(mid):
+    """The whole card, in order, behind whatever the page is waiting for. Only
+    for the cloned voice: local and free."""
+    if who()['engine'] != 'clone':
+        return
+    plan = read_plan(mid)
+    if not plan:
+        return
+    for n in range(plan['count']):
+        enqueue(mid, n, 1)
+
+
+def worker():
+    while True:
+        prio, n, _seq, key = JOBS.get()
+        mid, n = key
+        ev = JOB_DONE.get(key)
+        try:
+            w = who()
+            data = cached_sentence(mid, n, w)
+            if data is None:
+                plan = read_plan(mid)
+                if plan is None or n >= plan['count']:
+                    data, status = {'ok': False, 'error': 'no such sentence'}, 404
+                else:
+                    data, status = make_sentence(mid, n, w, plan['sents'][n])
+            else:
+                status = 200
+        except Exception as e:                                  # noqa: BLE001
+            log('worker %s/%d: %s' % (mid, n, e))
+            data, status = {'ok': False, 'error': str(e)}, 502
+        with JOB_LOCK:
+            JOB_RESULT[key] = (data, status)
+            if status != 200:
+                JOB_DONE.pop(key, None)         # so the next request tries again
+        if ev:
+            ev.set()
+
+
+threading.Thread(target=worker, name='sentences', daemon=True).start()
 
 
 @app.route('/api/read/<mid>/sent/<int:n>', methods=['POST', 'OPTIONS'])
@@ -396,64 +535,14 @@ def read_sentence(mid, n):
     plan = read_plan(mid)
     if plan is None or n < 0 or n >= plan['count']:
         return jsonify({'ok': False, 'error': 'no such sentence'}), 404
-    w = who()
-    text = plan['sents'][n]
-    if w['engine'] == 'clone':
-        # THE CLONED VOICE: local, free, cached per voice and model (voice.py). The
-        # sister's cache file is named after the voice so Beatrice's clips and a
-        # clone's never mix, and switching voices re-reads nothing already made.
-        cache = os.path.join(AUDIO, mid, '%d.%s-%s.json' % (n, w['voice'], w['model']))
-        if os.path.isfile(cache):
-            with open(cache, encoding='utf-8') as fh:
-                data = json.load(fh)
-            data['cached'] = True
-            return jsonify(data)
-        try:
-            with SYNTH_LOCK:
-                audio, tokens = V.clone_clip(text, w['voice'])
-        except RuntimeError as e:
-            log('read %s/%d (%s) failed: %s' % (mid, n, w['voice'], e))
-            return jsonify({'ok': False, 'error': str(e)}), 502
-        from speechify import proportional_tokens
-        prop = not tokens
-        if prop:
-            tokens = proportional_tokens(text)
-        clip = {'src': 'data:audio/mpeg;base64,' + base64.b64encode(audio).decode('ascii'),
-                'prop': prop, 'text': text, 'words': tokens,
-                'dur': (tokens[-1]['d'] if tokens and not prop else 0)}
-        data = {'ok': True, 'id': mid, 'n': n, 'clip': clip, 'billed': 0, 'key': w['label'], 'cached': False}
-        os.makedirs(os.path.dirname(cache), exist_ok=True)
-        with open(cache, 'w', encoding='utf-8') as fh:
-            json.dump(data, fh)
-        log('read %s/%d: %d chars in %s' % (mid, n, len(text), w['label']))
+    data = cached_sentence(mid, n, who())
+    if data is not None:
         return jsonify(data)
-    cache = os.path.join(AUDIO, mid, '%d.json' % n)
-    if os.path.isfile(cache):
-        with open(cache, encoding='utf-8') as fh:
-            data = json.load(fh)
-        data['cached'] = True
-        return jsonify(data)
-    with SYNTH_LOCK:
-        ring = Ring()
-        if not ring.keys:
-            return jsonify({'ok': False, 'error': 'no Speechify keys in ' + ring.keyfile}), 503
-        if not ring.usable():
-            return jsonify({'ok': False, 'error': 'every Speechify key is dead or cooling'}), 503
-        try:
-            audio, tokens, billed, prop = synth(ring, text)
-        except RuntimeError as e:
-            log('read %s/%d failed: %s' % (mid, n, e))
-            return jsonify({'ok': False, 'error': str(e)}), 502
-        label, masked = ring.active()
-    clip = {'src': 'data:audio/mpeg;base64,' + base64.b64encode(audio).decode('ascii'),
-            'prop': prop, 'text': text, 'words': tokens,
-            'dur': (tokens[-1]['d'] if tokens and not prop else 0)}
-    data = {'ok': True, 'id': mid, 'n': n, 'clip': clip, 'billed': billed, 'key': label, 'cached': False}
-    os.makedirs(os.path.dirname(cache), exist_ok=True)
-    with open(cache, 'w', encoding='utf-8') as fh:
-        json.dump(data, fh)
-    log('read %s/%d: %d chars on %s %s' % (mid, n, billed, label, masked))
-    return jsonify(data)
+    ev = enqueue(mid, n, 0)
+    if not ev.wait(600):
+        return jsonify({'ok': False, 'error': 'the voice took too long'}), 504
+    data, status = JOB_RESULT.get((mid, n), ({'ok': False, 'error': 'lost'}, 502))
+    return jsonify(data), status
 
 
 # -------------------------------------------------------- the ears, the voice

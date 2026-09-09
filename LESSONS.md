@@ -79,3 +79,10 @@ What one day of building this taught, 2.9.2026. Each one cost something; none sh
   (<n>.<voice>-<model>.json), so Beatrice's and a clone's never mix and switching re-reads nothing.
 - A wav uploaded to /api/hear must not be written under the name ffmpeg will write to: the input
   is <stamp>.in.<ext>, the output <stamp>.wav.
+- A lock is not a queue. Three sentence requests racing for SYNTH_LOCK were made in whatever order
+  the threads won it, so sentence 2 often came before sentence 0 and the first word waited for all
+  three. One worker thread and a PriorityQueue keyed (priority, sentence number) make them first to
+  last; the page waits for three before the first word and keeps three ahead (Marko, 9.9.2026).
+- The cloned voice costs five to nine seconds a sentence whatever its length (about 2.5 s fixed in
+  the clone, then Whisper listening to the clip for the word timing), slower than speech. So the
+  worker starts on every Claude card as it arrives, before READ; only the clone, Beatrice is billed.
