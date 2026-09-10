@@ -536,8 +536,8 @@ function sentenceFor(plan, snippet){
   sents.forEach((t, i) => { const c = words.filter(w => t.includes(w)).length; if (c > score){ score = c; best = i; } });
   return best;
 }
-function readPlan(url, payload, el, btn, st, startKey){
-  if (current && current.msgEl === el && !startKey){ current.toggle(); return; }
+function readPlan(url, payload, el, btn, st, startKey, startAt){
+  if (current && current.msgEl === el && !startKey && startAt == null){ current.toggle(); return; }
   endReading();
   st.textContent = ''; st.className = st.id === 'rs' ? '' : 'st'; noteEl = st;
   openTP(el); showPill(btn);
@@ -549,7 +549,7 @@ function readPlan(url, payload, el, btn, st, startKey){
       if (ctl !== pending) return; pending = null;
       if (!plan.ok){ st.textContent = plan.error || 'nothing to read'; st.className = 'bad'; tpNote(plan.error || 'nothing to read', true); return; }
       current = new Reader(plan, el, btn, st);
-      current.start(startKey ? sentenceFor(plan, startKey) : 0);
+      current.start(startAt != null ? Math.min(startAt, plan.count - 1) : startKey ? sentenceFor(plan, startKey) : 0);
     }).catch(err => {
       if (ctl !== pending) return; pending = null;
       if (err && err.name === 'AbortError') return;
@@ -632,11 +632,17 @@ gear.onclick = () => togglePanel();
 document.addEventListener('pointerdown', e => { if (panel.classList.contains('on') && !panel.contains(e.target) && !gear.contains(e.target)) togglePanel(false); });
 
 function loadVoice(){ return fetch('/api/voice').then(r => r.json()).then(j => { VOICE = j; paintVoice(); }).catch(() => {}); }
+/* A NEW VOICE TAKES OVER AT ONCE (Marko, 10.9.2026: "if there is some reading going on, it deletes old
+   and starts with new voice"): what is being read goes on from the sentence it was at, in the new voice. */
 function setVoice(name){
   const body = name === 'beatrice' ? {engine: 'beatrice'} : {engine: 'clone', voice: name};
   vst.textContent = 'switching …';
+  const was = current ? {el: current.msgEl, btn: current.btn, i: Math.max(0, current.ci), draft: current.draft, mid: current.mid} : null;
   fetch('/api/voice', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})
-    .then(r => r.json()).then(j => { VOICE = j; paintVoice(); vst.textContent = 'The sister talks with ' + vlabel() + ' now.'; })
+    .then(r => r.json()).then(j => { VOICE = j; paintVoice(); vst.textContent = 'The sister talks with ' + vlabel() + ' now.';
+      if (was){ endReading();
+        if (was.draft) readPlan('/api/read/draft/plan', {text: rt.value.trim()}, composer, rdraft, rs, null, was.i);
+        else readPlan('/api/read/' + was.mid + '/plan', {}, was.el, was.btn, was.el.querySelector('.st'), null, was.i); } })
     .catch(() => { vst.textContent = 'Server not reachable.'; });
 }
 autoBtn.onclick = () => { AUTO = !AUTO; try { localStorage.setItem('mantra.auto', AUTO ? '1' : '0'); } catch(e){} paintVoice(); };

@@ -487,9 +487,20 @@ def beatrice_sentence(mid, n, w, text):
     return store_clip(mid, n, w, text, audio, tokens, prop, billed, label, masked), 200
 
 
+def job_key(mid, n, w=None):
+    """A job is a sentence IN A VOICE (Marko, 10.9.2026, after "the sentence was lost": a job finished
+    in one voice looked finished for the next, so READ AGAIN after a voice change made nothing)."""
+    w = w or who()
+    return (str(mid), n, w['engine'], w['voice'], w['model'])
+
+
+def voice_of(key):
+    return {'engine': key[2], 'voice': key[3], 'model': key[4], 'label': key[3] if key[2] == 'clone' else 'Beatrice'}
+
+
 def enqueue(mid, n, prio):
-    """Queue sentence n of plan mid; a job already queued or made is left alone."""
-    key = (str(mid), n)
+    """Queue sentence n of plan mid in the voice of this moment; a job already queued or made is left alone."""
+    key = job_key(mid, n)
     with JOB_LOCK:
         ev = JOB_DONE.get(key)
         if ev is None:
@@ -505,10 +516,10 @@ def forget(mid, n):
     """Drop what the sister holds for a sentence: its cache file (a clone's only;
     Beatrice's cost money), its event and its result. Asked for again, it is
     remade from the voice's own store in a moment."""
-    key = (str(mid), n)
     with JOB_LOCK:
-        JOB_DONE.pop(key, None)
-        JOB_RESULT.pop(key, None)
+        for key in [k for k in JOB_DONE if k[0] == str(mid) and k[1] == n]:
+            JOB_DONE.pop(key, None)
+            JOB_RESULT.pop(key, None)
     w = who()
     if w['engine'] == 'clone':
         try:
@@ -591,8 +602,13 @@ def stage_one():
     """The clone (or Beatrice) makes the audio, in order."""
     while True:
         prio, n, _seq, key = JOBS.get()
-        mid, n = key
+        mid, n = key[0], key[1]
         try:
+            w = voice_of(key)
+            now = who()
+            if (w['engine'], w['voice']) != (now['engine'], now['voice']):   # the voice changed: the old voice's jobs are dropped
+                finish_job(key, {'ok': False, 'error': 'the voice changed'}, 410)
+                continue
             if prio > 0 and n < CURSOR.get(mid, 0):
                 with JOB_LOCK:                              # behind the reader: made only if asked for
                     if not JOB_DONE.get(key, threading.Event()).is_set():
@@ -601,7 +617,6 @@ def stage_one():
             with JOB_LOCK:
                 if key in IN_FLIGHT:                       # asked for again while the ears time it
                     continue
-            w = who()
             data = cached_sentence(mid, n, w)
             if data is not None:
                 finish_job(key, data, 200)
@@ -675,7 +690,7 @@ def read_sentence(mid, n):
         if not ev.wait(600):
             return jsonify({'ok': False, 'error': 'the voice took too long'}), 504
         with JOB_LOCK:
-            got = JOB_RESULT.pop((mid, n), None)
+            got = JOB_RESULT.pop(job_key(mid, n, w), None)
         if got is None:
             data = cached_sentence(mid, n, w)
             if data is None:
@@ -728,6 +743,11 @@ def api_voice():
         V.set_conf(d.get('engine'), d.get('voice'))
         if who()['engine'] == 'clone':
             V.warm()
+        now = who()
+        with JOB_LOCK:                                           # the old voice's unfinished jobs go
+            for k in [k for k, ev in JOB_DONE.items() if not ev.is_set() and (k[2], k[3]) != (now['engine'], now['voice'])]:
+                JOB_DONE.pop(k, None)
+                JOB_RESULT.pop(k, None)
     w = who()
     st = V.status()
     return jsonify(dict(w, ok=True, available=V.AVAILABLE, why=V.why_not(),

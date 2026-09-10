@@ -106,3 +106,8 @@ What one day of building this taught, 2.9.2026. Each one cost something; none sh
   the project and the live dot; the side pane keeps the words and the sessions. The same gear is in the
   Ableton Command Guide's page, which is this page with the guide inside.
 - A page rendered headless with the panel open: `?static=1&gear=1`.
+- A job is a sentence in a voice (10.9.2026, found in the guide's page, the same code): keyed by card
+  and number alone, a sentence made in one voice looked made for the next, and READ AGAIN after a
+  voice change answered "the sentence was lost". The job key carries engine, voice and model; a
+  voice change drops the old voice's unfinished jobs; the page restarts the reading at the sentence
+  it was at, in the new voice.
