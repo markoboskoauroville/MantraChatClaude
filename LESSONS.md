@@ -98,3 +98,11 @@ What one day of building this taught, 2.9.2026. Each one cost something; none sh
   touched. Without it the audio folder grew a folder per card forever, 22 MB in a week.
 - A sentence asked for twice while it sits between the two stages was made twice, Whisper and
   all. An in-flight set drops the second entry; the first one's event serves both.
+
+## 10.9.2026, the gear
+
+- Every option lives under one gear at the lower right of the entry band, where the hand already is
+  (Marko: "all options ... only live under the gear icon"). The top bar keeps the pane icon, the title,
+  the project and the live dot; the side pane keeps the words and the sessions. The same gear is in the
+  Ableton Command Guide's page, which is this page with the guide inside.
+- A page rendered headless with the panel open: `?static=1&gear=1`.

@@ -8,7 +8,9 @@ has READ: the text is spoken by Speechify's Beatrice, one sentence at a time, in
 Beatrice window where the sentence being read is pushed to the top edge and the spoken word
 is lit red. A floating control pill carries previous and next sentence, play and pause,
 speed, font size, and X to end. What is typed on the page reaches the Claude Code session.
-A side pane opens claude.ai beside the page, tiled at the golden section.
+A side pane opens claude.ai beside the page, tiled at the golden section. Every option lives under the
+gear at the lower right of the entry band, and nowhere else (Marko, 10.9.2026): the voice, AUTO VOICE,
+CLONE MY VOICE, claude.ai beside, the top bar.
 
 Nothing here is invented. It was recombined on 2.9.2026 from code that already existed in
 Marko's other projects: the reader script's offline player, the Streamlit project's key ring

@@ -39,9 +39,6 @@ body.open #side{width:var(--gold);min-width:280px}
   border-bottom:1px solid var(--line);background:rgba(11,13,16,.96);transform:translateY(-100%);transition:transform .18s ease}
 #top.show,body.pinned #top{transform:none}
 #top .t{cursor:pointer}
-#pin{background:transparent;border:1px solid var(--slate);color:var(--dim);border-radius:999px;font:700 10px/1 ui-monospace,Menlo,monospace;
-  letter-spacing:.1em;padding:6px 9px;cursor:pointer}
-body.pinned #pin{color:var(--amber);border-color:var(--amber)}
 #tog{background:transparent;border:0;padding:6px;cursor:pointer;color:var(--ink);border-radius:8px;display:flex}
 #tog:hover{background:var(--slate)}
 #tog svg{width:24px;height:24px;display:block}
@@ -144,12 +141,10 @@ body.pinned #pin{color:var(--amber);border-color:var(--amber)}
 #vu i{position:absolute;left:0;top:0;bottom:0;width:0;transition:width .08s linear;
   background:linear-gradient(90deg,#3fb862 0,#3fb862 60%,#e0c040 80%,#d04a3a 100%)}
 @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(226,59,78,.5)}70%{box-shadow:0 0 0 10px rgba(226,59,78,0)}100%{box-shadow:0 0 0 0 rgba(226,59,78,0)}}
-/* the voice chip and AUTO VOICE in the top bar; the voices in the side pane */
-#vchip,#auto{background:transparent;border:1px solid var(--slate);color:var(--dim);border-radius:999px;font:700 10px/1 ui-monospace,Menlo,monospace;
-  letter-spacing:.1em;padding:6px 9px;cursor:pointer;white-space:nowrap}
-#vchip{color:var(--amber);border-color:var(--amber)}
+/* EVERY OPTION LIVES UNDER THE GEAR (Marko, 10.9.2026: "voice, auto voice, clone my voice ... all
+   options ... only live under the gear icon"): nothing in the top bar, nothing in the side pane. */
 #auto.on{color:#3fb862;border-color:#3fb862}
-#voices{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
+#voices{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px}
 #voices .b.on{background:var(--amber);color:#0b0d10;border-color:var(--amber)}
 #vst{font:12px/1.5 ui-monospace,Menlo,monospace;color:var(--dim);min-height:18px}
 /* THE GEAR (Marko, 10.9.2026: "settings in the chat input part on the lower right corner as a gear
@@ -167,6 +162,7 @@ body.pinned #pin{color:var(--amber);border-color:var(--amber)}
 #settings .btns{display:flex;flex-wrap:wrap;gap:8px}
 #settings .b{padding:9px 13px;font-size:11px}
 #settings .b.on{background:var(--amber);color:#0b0d10;border-color:var(--amber)}
+#settings .b{margin:0}
 #settings p{margin:6px 0 0;color:var(--dim);font-size:12px;font-family:ui-monospace,Menlo,monospace}
 /* reading in place: the card's body carries the sentences; a draft is read in a box where the entry box was */
 .msg .body .sent{cursor:pointer;line-height:1.6}
@@ -214,11 +210,14 @@ function hideTopSoon(){ if (hideT) clearTimeout(hideT); hideT = setTimeout(() =>
 hot.addEventListener('mouseenter', showTop);
 topbar.addEventListener('mouseenter', showTop);
 topbar.addEventListener('mouseleave', hideTopSoon);
-document.getElementById('pin').onclick = () => {
-  document.body.classList.toggle('pinned');
+const pinBtn = document.getElementById('pin');
+function paintPin(){ const on = document.body.classList.contains('pinned'); pinBtn.className = 'b ghost' + (on ? ' on' : ''); pinBtn.textContent = on ? 'THE BAR STAYS' : 'THE BAR HIDES ITSELF'; }
+pinBtn.onclick = () => {
+  document.body.classList.toggle('pinned'); paintPin();
   try { localStorage.setItem('mantra.pin', document.body.classList.contains('pinned') ? '1' : '0'); } catch(e){}
 };
 try { if (localStorage.getItem('mantra.pin') === '1') document.body.classList.add('pinned'); } catch(e){}
+paintPin();
 showTop(); hideT = setTimeout(() => topbar.classList.remove('show'), 2500);
 
 /* ---------------------------------------------------------- side pane */
@@ -608,14 +607,13 @@ grip.addEventListener('pointerdown', e => {
    sister talks with is the whole system's choice (~/.voice/voice.json): a cloned voice, local and
    free, or Beatrice. The chip in the top bar cycles through them; the side pane lists them. */
 const talkBtn = document.getElementById('talk'), vu = document.getElementById('vu').firstElementChild, cancelBtn = document.getElementById('cancel');
-const vchip = document.getElementById('vchip'), autoBtn = document.getElementById('auto'), voicesEl = document.getElementById('voices'), vst = document.getElementById('vst');
+const autoBtn = document.getElementById('auto'), voicesEl = document.getElementById('voices'), vst = document.getElementById('vst');
 let VOICE = {engine: 'beatrice', label: 'Beatrice', voices: []}, AUTO = true, MIC = 'idle', rec = null, chunks = [], stream = null, actx = null, vuRaf = null, micTimer = null, queued = [];
 try { AUTO = localStorage.getItem('mantra.auto') !== '0'; } catch(e){}
 function vlabel(){ return VOICE.label || 'Beatrice'; }
 function paintVoice(){
-  vchip.textContent = 'VOICE: ' + vlabel().toUpperCase();
   document.querySelector('#tpgrip .who').textContent = vlabel().toUpperCase();
-  autoBtn.classList.toggle('on', AUTO); autoBtn.textContent = AUTO ? 'AUTO VOICE ON' : 'AUTO VOICE OFF';
+  autoBtn.className = 'b ghost' + (AUTO ? ' on' : ''); autoBtn.textContent = AUTO ? 'AUTO VOICE ON: EVERY ANSWER IS SPOKEN' : 'AUTO VOICE OFF';
   voicesEl.innerHTML = '';
   const all = [{name: 'beatrice', label: 'Beatrice · Speechify'}].concat((VOICE.voices || []).map(n => ({name: n, label: n + ' · cloned, local'})));
   all.forEach(v => {
@@ -624,30 +622,15 @@ function paintVoice(){
     b.onclick = () => setVoice(v.name); voicesEl.appendChild(b);
   });
   if (VOICE.available === false) vst.textContent = 'Only Beatrice here: ' + (VOICE.why || 'MANTRA_VOICE is not on this Mac.');
-  paintPanel(all);
 }
-/* THE GEAR'S PANEL (Marko, 10.9.2026): the same choices as the top bar and the side pane, at the
-   lower right corner of the entry band, where the hand already is. */
+/* THE GEAR'S PANEL (Marko, 10.9.2026): every option of the sister, and nowhere else: the voice,
+   AUTO VOICE, CLONE MY VOICE, claude.ai beside, the top bar. At the lower right corner of the entry
+   band, where the hand already is. */
 const gear = document.getElementById('gear'), panel = document.getElementById('settings');
 function togglePanel(on){ const want = on == null ? !panel.classList.contains('on') : on; panel.classList.toggle('on', want); gear.classList.toggle('on', want); if (want) paintVoice(); }
 gear.onclick = () => togglePanel();
 document.addEventListener('pointerdown', e => { if (panel.classList.contains('on') && !panel.contains(e.target) && !gear.contains(e.target)) togglePanel(false); });
-function paintPanel(all){
-  const sv = document.getElementById('svoices'); sv.innerHTML = '';
-  (all || []).forEach(v => {
-    const on = v.name === 'beatrice' ? VOICE.engine === 'beatrice' : (VOICE.engine === 'clone' && VOICE.voice === v.name);
-    const b = document.createElement('button'); b.className = 'b ghost' + (on ? ' on' : ''); b.textContent = v.label.toUpperCase();
-    b.onclick = () => setVoice(v.name); sv.appendChild(b);
-  });
-  const sa = document.getElementById('sAuto'); sa.className = 'b ghost' + (AUTO ? ' on' : ''); sa.textContent = AUTO ? 'AUTO VOICE ON: EVERY ANSWER IS SPOKEN' : 'AUTO VOICE OFF';
-  const sp = document.getElementById('sPin'); sp.className = 'b ghost' + (document.body.classList.contains('pinned') ? ' on' : ''); sp.textContent = document.body.classList.contains('pinned') ? 'THE BAR STAYS' : 'THE BAR HIDES ITSELF';
-  document.getElementById('sst').textContent = vst.textContent || document.getElementById('pst').textContent || '';
-}
-document.getElementById('sAuto').onclick = () => autoBtn.onclick();
-document.getElementById('sPin').onclick = () => { document.getElementById('pin').onclick(); paintPanel(); };
-document.getElementById('sOpen').onclick = () => pane(true);
-document.getElementById('sHide').onclick = () => pane(false);
-document.getElementById('sClone').onclick = () => document.getElementById('cloneme').onclick();
+
 function loadVoice(){ return fetch('/api/voice').then(r => r.json()).then(j => { VOICE = j; paintVoice(); }).catch(() => {}); }
 function setVoice(name){
   const body = name === 'beatrice' ? {engine: 'beatrice'} : {engine: 'clone', voice: name};
@@ -656,11 +639,6 @@ function setVoice(name){
     .then(r => r.json()).then(j => { VOICE = j; paintVoice(); vst.textContent = 'The sister talks with ' + vlabel() + ' now.'; })
     .catch(() => { vst.textContent = 'Server not reachable.'; });
 }
-vchip.onclick = () => {
-  const names = ['beatrice'].concat(VOICE.voices || []);
-  const cur = VOICE.engine === 'beatrice' ? 'beatrice' : VOICE.voice;
-  setVoice(names[(names.indexOf(cur) + 1) % names.length]);
-};
 autoBtn.onclick = () => { AUTO = !AUTO; try { localStorage.setItem('mantra.auto', AUTO ? '1' : '0'); } catch(e){} paintVoice(); };
 loadVoice();
 
@@ -793,6 +771,7 @@ fetch('/api/messages?since=0&limit=300').then(r => r.json()).then(ms => {
   if (!ms.length){ const d = document.createElement('div'); d.id = 'empty'; d.textContent = 'Nothing yet. Start a Claude Code session and the conversation appears here.'; list.appendChild(d); }
   if (!/static/.test(location.search)) connect();
 }).catch(() => { connect(); });
+if (/gear/.test(location.search)) togglePanel(true);          /* a render with the panel open */
 """
 
 HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -801,23 +780,16 @@ HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <style>%(css)s</style></head><body>
 <aside id="side"><div class="in">
 <h2>CLAUDE.AI BESIDE</h2>
-<p>claude.ai refuses to live inside another page, so it opens as its own window tiled to the left of this one, the golden section. The icon at the top hides and shows this pane.</p>
-<div class="btns"><button class="b" id="pOpen">OPEN CLAUDE.AI BESIDE</button><button class="b ghost" id="pHide">HIDE IT</button></div>
-<p id="pst"></p>
-<div class="btns"><a class="b ghost" href="https://claude.ai/new" target="_blank" rel="noopener">NEW CHAT ON CLAUDE.AI</a>
-<a class="b ghost" id="sesslink" href="#" target="_blank" rel="noopener" style="display:none">THIS SESSION ON CLAUDE.AI</a></div>
+<p>claude.ai refuses to live inside another page, so it opens as its own window tiled to the left of this one, the golden section; the gear at the lower right opens and hides it. The icon at the top hides and shows this pane.</p>
 <h2>VOICE</h2>
-<p>TALK, or the space bar, opens the microphone; TALK or the space bar again sends the words to Claude, written down by Whisper here on this Mac. Escape throws a recording away. With AUTO VOICE on, every answer is spoken as it arrives, in the voice chosen here, the sentence and the word lit.</p>
-<div id="voices"></div>
-<div class="btns"><button class="b ghost" id="cloneme">CLONE MY VOICE · 15 SECONDS</button></div>
-<p id="vst"></p>
+<p>TALK, or the space bar, opens the microphone; TALK or the space bar again sends the words to Claude, written down by Whisper here on this Mac. Escape throws a recording away. With AUTO VOICE on, every answer is spoken as it arrives, in the voice chosen under the gear, the sentence and the word lit. Every option lives under the gear at the lower right of the entry band.</p>
 <h2>READING</h2>
 <p>READ lights the words in the card itself, one window: the sentence being read yellow, the word red, the sentence brought to the top edge of the log so the eyes stay put. A click anywhere in a card starts the voice at that sentence. While a card is read, its controls sit beside READ: previous and next sentence, play and pause, speed minus and plus, font minus and plus, and X to end. P pauses, arrows skip, Escape ends, plus and minus change the font.</p>
 <h2>SESSIONS</h2><div id="sessions"></div>
 </div></aside>
 <main id="main">
 <div id="hot"></div>
-<div id="top"><button id="tog" title="Side pane">%(icon)s</button><span class="t" id="title">MANTRA CHAT</span><span class="p" id="proj">waiting for a session</span><button id="auto" title="speak every answer as it arrives">AUTO VOICE</button><button id="vchip" title="how the sister talks; click to change">VOICE</button><button id="pin" title="keep the bar">PIN</button><span id="dot" title="live"></span></div>
+<div id="top"><button id="tog" title="Side pane">%(icon)s</button><span class="t" id="title">MANTRA CHAT</span><span class="p" id="proj">waiting for a session</span><span id="dot" title="live"></span></div>
 <div id="list"></div>
 <div id="tp"><div id="tpgrip"><span class="dots"></span><span class="who">BEATRICE</span><span class="cnt" id="tpcnt"></span></div><div id="tpbox"><div id="tpdoc"></div></div><div id="tpline"></div><div id="tpcorner"></div>
 <div id="tpstatus"></div></div>
@@ -825,12 +797,15 @@ HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <div class="row"><button id="talk" title="the space bar, too">TALK</button><span id="vu"><i></i></span><button id="cancel" title="Escape" hidden>✕</button><button id="send">SEND TO CLAUDE</button><button id="rdraft" class="rd">READ</button><span id="rs"></span></div></div>
 <button id="gear" title="settings">%(gear)s</button>
 <div id="settings">
-<h3>VOICE</h3><div class="btns" id="svoices"></div>
-<div class="btns" style="margin-top:8px"><button class="b ghost" id="sClone">CLONE MY VOICE · 15 SECONDS</button></div>
-<h3>SPEAKING THE ANSWERS</h3><div class="btns"><button class="b ghost" id="sAuto">AUTO VOICE</button></div>
-<h3>CLAUDE.AI BESIDE</h3><div class="btns"><button class="b ghost" id="sOpen">OPEN CLAUDE.AI BESIDE</button><button class="b ghost" id="sHide">HIDE IT</button></div>
-<h3>THE TOP BAR</h3><div class="btns"><button class="b ghost" id="sPin">KEEP THE BAR</button></div>
-<p id="sst"></p>
+<h3>VOICE</h3><div id="voices"></div>
+<div class="btns"><button class="b ghost" id="cloneme">CLONE MY VOICE · 15 SECONDS</button></div>
+<p id="vst"></p>
+<h3>SPEAKING THE ANSWERS</h3><div class="btns"><button class="b ghost" id="auto">AUTO VOICE</button></div>
+<h3>CLAUDE.AI BESIDE</h3><div class="btns"><button class="b ghost" id="pOpen">OPEN CLAUDE.AI BESIDE</button><button class="b ghost" id="pHide">HIDE IT</button>
+<a class="b ghost" href="https://claude.ai/new" target="_blank" rel="noopener">NEW CHAT ON CLAUDE.AI</a>
+<a class="b ghost" id="sesslink" href="#" target="_blank" rel="noopener" style="display:none">THIS SESSION ON CLAUDE.AI</a></div>
+<p id="pst"></p>
+<h3>THE TOP BAR</h3><div class="btns"><button class="b ghost" id="pin">THE BAR HIDES ITSELF</button></div>
 </div>
 </main>
 <div id="pill"><span class="grip"></span><button id="pb" title="previous sentence">⏮</button><button id="pp" title="play / pause">▶</button><button id="pn" title="next sentence">⏭</button>
