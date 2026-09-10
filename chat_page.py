@@ -122,7 +122,7 @@ body.pinned #pin{color:var(--amber);border-color:var(--amber)}
 #rt{width:100%;flex:1;min-height:40px;background:#141a21;color:var(--ink);border:1px solid var(--slate);border-radius:12px;
   padding:12px 14px;font:17px/1.5 inherit;resize:none;outline:none}
 #rt:focus{border-color:var(--amber)}
-#composer .row{display:flex;align-items:center;gap:12px;margin-top:8px}
+#composer .row{display:flex;align-items:center;gap:12px;margin-top:8px;padding-right:48px}
 #composer.reading{box-shadow:inset 0 1px 0 var(--amber)}
 #send{background:var(--amber);color:#0b0d10;border:0;border-radius:999px;font:700 12px/1 ui-monospace,Menlo,monospace;
   letter-spacing:.1em;padding:12px 18px;cursor:pointer}
@@ -152,6 +152,22 @@ body.pinned #pin{color:var(--amber);border-color:var(--amber)}
 #voices{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
 #voices .b.on{background:var(--amber);color:#0b0d10;border-color:var(--amber)}
 #vst{font:12px/1.5 ui-monospace,Menlo,monospace;color:var(--dim);min-height:18px}
+/* THE GEAR (Marko, 10.9.2026: "settings in the chat input part on the lower right corner as a gear
+   icon"). It sits in the corner of the entry band; its panel opens upward from there and holds what
+   the top bar and the side pane hold: the voice, AUTO VOICE, CLONE MY VOICE, claude.ai beside, PIN. */
+#gear{position:absolute;right:16px;bottom:14px;width:38px;height:38px;border-radius:50%;border:1px solid var(--slate);
+  background:transparent;color:var(--dim);cursor:pointer;display:flex;align-items:center;justify-content:center;z-index:31}
+#gear svg{width:20px;height:20px}
+#gear:hover,#gear.on{color:var(--amber);border-color:var(--amber)}
+#settings{display:none;position:absolute;right:16px;bottom:60px;width:min(92vw,440px);max-height:calc(100vh - 80px);overflow:auto;
+  background:#0e1218;border:1px solid var(--slate);border-radius:14px;padding:16px 16px 12px;z-index:30;box-shadow:0 20px 60px rgba(0,0,0,.6)}
+#settings.on{display:block}
+#settings h3{font:700 10.5px/1 ui-monospace,Menlo,monospace;letter-spacing:.14em;color:var(--amber);margin:12px 0 8px}
+#settings h3:first-child{margin-top:0}
+#settings .btns{display:flex;flex-wrap:wrap;gap:8px}
+#settings .b{padding:9px 13px;font-size:11px}
+#settings .b.on{background:var(--amber);color:#0b0d10;border-color:var(--amber)}
+#settings p{margin:6px 0 0;color:var(--dim);font-size:12px;font-family:ui-monospace,Menlo,monospace}
 /* reading in place: the card's body carries the sentences; a draft is read in a box where the entry box was */
 .msg .body .sent{cursor:pointer;line-height:1.6}
 #draftdoc{display:none;flex:1;min-height:40px;overflow:auto;background:#141a21;border:1px solid var(--amber);border-radius:12px;
@@ -161,6 +177,10 @@ body.pinned #pin{color:var(--amber);border-color:var(--amber)}
 ICON = ('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round">'
         '<rect x="3" y="4" width="18" height="16" rx="3"/>'
         '<line x1="9.9" y1="4" x2="9.9" y2="20"/></svg>')
+
+GEAR = ('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'
+        '<circle cx="12" cy="12" r="3.2"/>'
+        '<path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>')
 
 JS = r"""
 const PORT = __PORT__;
@@ -604,7 +624,30 @@ function paintVoice(){
     b.onclick = () => setVoice(v.name); voicesEl.appendChild(b);
   });
   if (VOICE.available === false) vst.textContent = 'Only Beatrice here: ' + (VOICE.why || 'MANTRA_VOICE is not on this Mac.');
+  paintPanel(all);
 }
+/* THE GEAR'S PANEL (Marko, 10.9.2026): the same choices as the top bar and the side pane, at the
+   lower right corner of the entry band, where the hand already is. */
+const gear = document.getElementById('gear'), panel = document.getElementById('settings');
+function togglePanel(on){ const want = on == null ? !panel.classList.contains('on') : on; panel.classList.toggle('on', want); gear.classList.toggle('on', want); if (want) paintVoice(); }
+gear.onclick = () => togglePanel();
+document.addEventListener('pointerdown', e => { if (panel.classList.contains('on') && !panel.contains(e.target) && !gear.contains(e.target)) togglePanel(false); });
+function paintPanel(all){
+  const sv = document.getElementById('svoices'); sv.innerHTML = '';
+  (all || []).forEach(v => {
+    const on = v.name === 'beatrice' ? VOICE.engine === 'beatrice' : (VOICE.engine === 'clone' && VOICE.voice === v.name);
+    const b = document.createElement('button'); b.className = 'b ghost' + (on ? ' on' : ''); b.textContent = v.label.toUpperCase();
+    b.onclick = () => setVoice(v.name); sv.appendChild(b);
+  });
+  const sa = document.getElementById('sAuto'); sa.className = 'b ghost' + (AUTO ? ' on' : ''); sa.textContent = AUTO ? 'AUTO VOICE ON: EVERY ANSWER IS SPOKEN' : 'AUTO VOICE OFF';
+  const sp = document.getElementById('sPin'); sp.className = 'b ghost' + (document.body.classList.contains('pinned') ? ' on' : ''); sp.textContent = document.body.classList.contains('pinned') ? 'THE BAR STAYS' : 'THE BAR HIDES ITSELF';
+  document.getElementById('sst').textContent = vst.textContent || document.getElementById('pst').textContent || '';
+}
+document.getElementById('sAuto').onclick = () => autoBtn.onclick();
+document.getElementById('sPin').onclick = () => { document.getElementById('pin').onclick(); paintPanel(); };
+document.getElementById('sOpen').onclick = () => pane(true);
+document.getElementById('sHide').onclick = () => pane(false);
+document.getElementById('sClone').onclick = () => document.getElementById('cloneme').onclick();
 function loadVoice(){ return fetch('/api/voice').then(r => r.json()).then(j => { VOICE = j; paintVoice(); }).catch(() => {}); }
 function setVoice(name){
   const body = name === 'beatrice' ? {engine: 'beatrice'} : {engine: 'clone', voice: name};
@@ -719,6 +762,7 @@ document.addEventListener('keydown', e => {
     e.preventDefault(); toggleMic(); return;
   }
   if (e.key === 'Escape' && MIC === 'listening'){ e.preventDefault(); stopMic(false); return; }
+  if (e.key === 'Escape' && panel.classList.contains('on')){ togglePanel(false); return; }
   if (tag === 'TEXTAREA' || tag === 'INPUT') return;
   if ((e.key === 'p' || e.key === 'P') && current) current.toggle();
   if (e.key === 'ArrowLeft' && current) current.skip(-1);
@@ -778,7 +822,16 @@ HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <div id="tp"><div id="tpgrip"><span class="dots"></span><span class="who">BEATRICE</span><span class="cnt" id="tpcnt"></span></div><div id="tpbox"><div id="tpdoc"></div></div><div id="tpline"></div><div id="tpcorner"></div>
 <div id="tpstatus"></div></div>
 <div id="composer"><div id="grip" title="drag to resize"><i></i></div><div class="in"><div id="draftdoc"></div><textarea id="rt" placeholder="Your answer to Claude. Enter sends, Shift+Enter is a new line."></textarea>
-<div class="row"><button id="talk" title="the space bar, too">TALK</button><span id="vu"><i></i></span><button id="cancel" title="Escape" hidden>✕</button><button id="send">SEND TO CLAUDE</button><button id="rdraft" class="rd">READ</button><span id="rs"></span></div></div></div>
+<div class="row"><button id="talk" title="the space bar, too">TALK</button><span id="vu"><i></i></span><button id="cancel" title="Escape" hidden>✕</button><button id="send">SEND TO CLAUDE</button><button id="rdraft" class="rd">READ</button><span id="rs"></span></div></div>
+<button id="gear" title="settings">%(gear)s</button>
+<div id="settings">
+<h3>VOICE</h3><div class="btns" id="svoices"></div>
+<div class="btns" style="margin-top:8px"><button class="b ghost" id="sClone">CLONE MY VOICE · 15 SECONDS</button></div>
+<h3>SPEAKING THE ANSWERS</h3><div class="btns"><button class="b ghost" id="sAuto">AUTO VOICE</button></div>
+<h3>CLAUDE.AI BESIDE</h3><div class="btns"><button class="b ghost" id="sOpen">OPEN CLAUDE.AI BESIDE</button><button class="b ghost" id="sHide">HIDE IT</button></div>
+<h3>THE TOP BAR</h3><div class="btns"><button class="b ghost" id="sPin">KEEP THE BAR</button></div>
+<p id="sst"></p>
+</div>
 </main>
 <div id="pill"><span class="grip"></span><button id="pb" title="previous sentence">⏮</button><button id="pp" title="play / pause">▶</button><button id="pn" title="next sentence">⏭</button>
 <button id="psm" title="slower">−</button><span class="v" id="pspd">1×</span><button id="psp" title="faster">+</button>
@@ -788,4 +841,4 @@ HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 
 
 def page_html(port):
-    return HTML % {'css': CSS, 'icon': ICON, 'js': JS.replace('__PORT__', str(int(port)))}
+    return HTML % {'css': CSS, 'icon': ICON, 'gear': GEAR, 'js': JS.replace('__PORT__', str(int(port)))}
